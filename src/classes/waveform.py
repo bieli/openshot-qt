@@ -25,73 +25,164 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import platform
 import threading
-from copy import deepcopy
-from classes import info
 from classes.app import get_app
 from classes.logger import log
+from classes.query import File, Clip
+from PyQt5.QtGui import QCursor
+from PyQt5.QtCore import Qt
 import openshot
-
+import uuid
 
 # Get settings
 s = get_app().get_settings()
 
+# resolution of audio waveform
+SAMPLES_PER_SECOND = 20
 
-def get_audio_data(clip_id, file_path, channel_filter, volume_keyframe):
-    """Get a Clip object form libopenshot, and grab audio data"""
-    clip = openshot.Clip(file_path)
-    clip.Open()
 
-    # Disable video stream (for speed improvement)
-    clip.Reader().info.has_video = False
+def get_audio_data(files: dict, transaction_id=None):
+    """Get a Clip object form libopenshot, and grab audio data
+        For for the given files and clips, start threads to gather audio data.
 
-    log.info("Clip loaded, start thread")
-    t = threading.Thread(target=get_waveform_thread, args=[clip, clip_id, file_path, channel_filter, volume_keyframe])
-    t.daemon = True
-    t.start()
+        arg1: a dict of clip_ids grouped by their file_id
+    """
 
-def get_waveform_thread(clip, clip_id, file_path, channel_filter=-1, volume_keyframe=None):
-    """Get the audio data from a clip in a separate thread"""
-    audio_data = []
-    sample_rate = clip.Reader().info.sample_rate
+    for file_id in files:
+        clip_list = files[file_id]
 
-    # How many samples per second do we need (to approximate the waveform)
-    samples_per_second = 20
-    sample_divisor = round(sample_rate / samples_per_second)
-    log.info("Getting waveform for sample rate: %s" % sample_rate)
+        log.info("Clip loaded, start thread")
+        t = threading.Thread(target=get_waveform_thread, args=[file_id, clip_list, transaction_id], daemon=True)
+        t.start()
 
-    sample = 0
-    for frame_number in range(1, clip.Reader().info.video_length):
-        # Get frame object
-        frame = clip.Reader().GetFrame(frame_number)
 
-        # Get volume for this frame
-        volume = 1.0
-        if volume_keyframe:
-            volume = volume_keyframe.GetValue(frame_number)
+def get_waveform_thread(file_id, clip_list, transaction_id):
+    """
+    For the given file ID and clip IDs, update audio data.
 
-        # Loop through samples in frame (hopping through it to get X # of data points per second)
-        while True:
-            # Determine amount of range
-            magnitude_range = sample_divisor
-            if sample + magnitude_range > frame.GetAudioSamplesCount():
-                magnitude_range = frame.GetAudioSamplesCount() - sample
+    arg1: file id to get the audio data of.
+    arg2: list of clips to update when the audio data is ready.
+    arg3: tid: transaction id to group waveform saves together
+    """
 
-            # Get audio data for this channel
-            if sample < frame.GetAudioSamplesCount():
-                audio_data.append(frame.GetAudioSample(channel_filter, sample, magnitude_range) * volume)
-            else:
-                # Adjust starting sample for next frame
-                sample = max(0, sample - frame.GetAudioSamplesCount())
-                break # We are done with this frame
+    def getAudioData(file, channel=-1, tid=None):
+        """
+        Update the file query object with audio data (if found).
+        """
+        # Ensure that UI attribute exists
+        file_data = file.data
+        file_audio_data = file_data.get("ui", {}).get("audio_data", [])
+        if file_audio_data and channel == -1:
+            log.info("Audio Data already retrieved (or being retrieved).")
+            return
 
-            # Jump to next sample needed
-            sample += sample_divisor
+        # Open file and access audio data (if audio data is found, otherwise return)
+        temp_clip = openshot.Clip(file_data["path"])
+        if temp_clip.Reader().info.has_audio == False:
+            log.info(f"file: {file_data['path']} has no audio_data. Skipping")
+            return
 
-    # Close reader
-    clip.Close()
+        # Show waiting cursor
+        get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
 
-    # Emit signal when done
-    log.info("get_waveform_thread completed")
-    get_app().window.WaveformReady.emit(clip_id, audio_data)
+        # Extract audio waveform data (for all channels)
+        # Use max RMS (root mean squared) value for each sample
+        # NOTE: we also have the average RMS value calculated, although we do
+        # not use it yet
+        waveformer = openshot.AudioWaveformer(temp_clip.Reader())
+        file_audio_data = waveformer.ExtractSamples(channel, SAMPLES_PER_SECOND, True)
+        samples_vectors = file_audio_data.vectors()
+        max_samples_vector = samples_vectors[0]  # max sample value dataset
+        rms_samples_vector = samples_vectors[1]  # average RMS sample value dataset
+
+        # Clear data
+        file_audio_data.clear()
+
+        # Update file with audio data (only if all channels requested)
+        if channel == -1:
+            get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
+
+        # Restore cursor
+        get_app().restoreOverrideCursor()
+
+        # Return audio sample dataset
+        return max_samples_vector
+
+    # Get file query object
+    file = File.get(id=file_id)
+
+    # Only generate audio for readers that actually contain audio
+    if not file.data.get("has_audio", False):
+        log.info("File does not have audio. Skipping")
+        return
+
+    # Transaction id to group all deletes together
+    if transaction_id:
+        tid = transaction_id
+    else:
+        tid = str(uuid.uuid4())
+
+    # If the file doesn't have audio data, generate it.
+    # A pending audio_data process will have audio_data == [-999]
+    file_audio_data = file.data.get("ui", {}).get("audio_data", [])
+    if not file_audio_data:
+        log.debug("Generating audio data for file %s" % file.id)
+        # Save empty 'audio_data' property before we get audio samples
+        get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": None}}, tid)
+        # Generate audio data for a specific file
+        file_audio_data = getAudioData(file, tid=tid)
+
+    if not file_audio_data:
+        log.info("No audio data found. Aborting")
+        return
+    log.debug("Audio data found for file: %s" % file.data.get("path"))
+
+    # Loop through each selected clip (which uses this file)
+    for clip_id in clip_list:
+        clip = Clip.get(id=clip_id)
+
+        if not clip:
+            # Ignore null clip
+            log.debug(f"No clip found for ID: {clip_id}. Skipping waveform generation.")
+            continue
+
+        # Check for channel mapping and filters
+        channel_filter = int(clip.data.get("channel_filter", {}).get("Points", [])[0].get("co", {}).get("Y", -1))
+        if channel_filter != -1:
+            # Some kind of filtering is happening, so we need to re-generate waveform data for this clip
+            file_audio_data = getAudioData(file, channel_filter, tid=tid)
+
+        # Get File's audio data (since it has changed)
+        if not file_audio_data:
+            log.info("File has no audio, so we cannot find any waveform audio data")
+            continue
+
+        # Save empty 'audio_data' property before we get audio samples
+        get_app().window.timeline.clipAudioDataReady.emit(clip.id, {"ui": {"audio_data": None}}, tid)
+
+        # Loop through samples from the file, applying this clip's volume curve
+        clip_audio_data = []
+        clip_instance = get_app().window.timeline_sync.timeline.GetClip(clip.id)
+        num_frames = clip_instance.info.video_length
+
+        # Determine best guess # of samples (based on duration)
+        # We don't want to use the len(file_audio_data) due to padding at EOF
+        # from libopenshot
+        sample_count = round(clip_instance.info.duration * SAMPLES_PER_SECOND)
+
+        # Determine sample ratio to FPS
+        sample_ratio = float(sample_count / num_frames)
+
+        # Loop through file samples and adjust time/volume values
+        # Copy adjusted samples into clip data
+        for sample_index in range(sample_count):
+            frame_num = round(sample_index / sample_ratio) + 1
+            volume = clip_instance.volume.GetValue(frame_num)
+            if clip_instance.time.GetCount() > 1:
+                # Override sample # using time curve (if set)
+                # Don't exceed array size
+                sample_index = min(round(clip_instance.time.GetValue(frame_num) * sample_ratio), sample_count - 1)
+            clip_audio_data.append(file_audio_data[sample_index] * volume)
+
+        # Save this data to the clip object
+        get_app().window.timeline.clipAudioDataReady.emit(clip.id, {"ui": {"audio_data": clip_audio_data}}, tid)

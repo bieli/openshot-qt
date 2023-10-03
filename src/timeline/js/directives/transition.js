@@ -80,11 +80,19 @@ App.directive("tlTransition", function () {
           }
 
           // Hide keyframe points
-          element.find(".point_icon").hide();
+          element.find(".point").fadeOut(100);
 
         },
         stop: function (e, ui) {
           dragging = false;
+
+          // Show keyframe points
+          element.find(".point").fadeIn(100);
+
+          // Calculate the pixel locations of the left and right side
+          let original_left_edge = scope.transition.position * scope.pixelsPerSecond;
+          let original_width = (scope.transition.end - scope.transition.start) * scope.pixelsPerSecond;
+          let original_right_edge = original_left_edge + original_width;
 
           if (resize_disabled) {
             // disabled, do nothing
@@ -92,29 +100,36 @@ App.directive("tlTransition", function () {
             return;
           }
 
-          // Hide snapline (if any)
-          scope.hideSnapline();
+          // Calculate the bounding box movement and apply snapping rules
+          let cursor_position = e.pageX - $("#ruler").offset().left;
+          let results = moveBoundingBox(scope, bounding_box.left, bounding_box.top,
+            cursor_position - bounding_box.left, cursor_position - bounding_box.top,
+            cursor_position, cursor_position, "trimming")
 
-          // Make the keyframe points visible again
-          element.find(".point_icon").show();
+          // Calculate delta from current mouse position
+          let new_position_px = results.position.left;
+          let delta_x = 0;
+          if (dragLoc === "left") {
+            delta_x = original_left_edge - new_position_px;
+          } else if (dragLoc === "right") {
+            delta_x = original_right_edge - new_position_px;
+          }
+          let delta_time = delta_x / scope.pixelsPerSecond;
 
-          //get amount changed in width
-          var delta_x = ui.originalSize.width - ui.element.width();
-          var delta_time = delta_x / scope.pixelsPerSecond;
-
-          //change the transition end/start based on which side was dragged
-          var new_left = scope.transition.position;
-          var new_right = (scope.transition.end - scope.transition.start);
+          //change the end/start based on which side was dragged
+          var new_position = scope.transition.position;
+          var new_right = scope.transition.end;
 
           if (dragLoc === "left") {
-            //changing the start of the transition
-            new_left += delta_time;
-            if (new_left < 0) {
-              new_left = 0;
-            } // prevent less than zero
+            // changing the start
+            new_position -= delta_time;
+            new_right += delta_time;
           } else {
             new_right -= delta_time;
           }
+
+          // Hide snapline (if any)
+          scope.hideSnapline();
 
           //apply the new start, end and length to the transition's scope
           scope.$apply(function () {
@@ -122,25 +137,31 @@ App.directive("tlTransition", function () {
               scope.transition.end = new_right;
             }
             if (dragLoc === "left") {
-              scope.transition.position = new_left;
-              scope.transition.end -= delta_time;
+              scope.transition.position = new_position;
+              scope.transition.start = 0.0;
+              scope.transition.end = new_right;
             }
           });
 
           // update transition in Qt (very important =)
           if (scope.Qt) {
-            timeline.update_transition_data(JSON.stringify(scope.transition), true, false);
+            timeline.update_transition_data(JSON.stringify(scope.transition), true, false, null);
           }
 
           dragLoc = null;
 
         },
         resize: function (e, ui) {
+          element.find(".point").fadeOut(100);
+
+          // Calculate the pixel locations of the left and right side
+          let original_left_edge = scope.transition.position * scope.pixelsPerSecond;
+          let original_width = (scope.transition.end - scope.transition.start) * scope.pixelsPerSecond;
+          let original_right_edge = original_left_edge + original_width;
 
           if (resize_disabled) {
             // disabled, keep the item the same size
-            $(this).css(ui.originalPosition);
-            $(this).width(ui.originalSize.width);
+            $(this).css({"left": original_left_edge + "px", "width": original_width + "px"});
             return;
           }
 
@@ -151,18 +172,17 @@ App.directive("tlTransition", function () {
             cursor_position, cursor_position, "trimming");
 
           // Calculate delta from current mouse position
-          let new_position = cursor_position;
-          new_position = results.position.left;
-          let delta_x = 0;
+          let new_position = results.position.left;
+          let delta_x = 0.0;
           if (dragLoc === "left") {
-            delta_x = (parseFloat(ui.originalPosition.left)) - new_position;
+            delta_x = original_left_edge - new_position;
           } else if (dragLoc === "right") {
-            delta_x = (parseFloat(ui.originalPosition.left) + parseFloat(ui.originalSize.width)) - new_position;
+            delta_x = original_right_edge - new_position;
           }
 
           // Calculate the pixel locations of the left and right side
-          var new_left = scope.transition.start * scope.pixelsPerSecond;
-          var new_right = scope.transition.end * scope.pixelsPerSecond;
+          var new_left = parseFloat(scope.transition.start * scope.pixelsPerSecond);
+          var new_right = parseFloat(scope.transition.end * scope.pixelsPerSecond);
 
           if (dragLoc === "left") {
             // Adjust left side of transition
@@ -216,7 +236,7 @@ App.directive("tlTransition", function () {
           bounding_box = {};
 
           // Init all other selected transitions (prepare to drag them)
-          // This creates a bounding box which contains all selected clips
+          // This creates a bounding box which contains all selections
           $(".ui-selected, #" + $(this).attr("id")).each(function () {
             start_transitions[$(this).attr("id")] = {
               "top": $(this).position().top + vert_scroll_offset,

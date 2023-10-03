@@ -31,7 +31,7 @@ import codecs
 import re
 from functools import partial
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QDialog
 
@@ -42,6 +42,8 @@ from classes.metrics import track_metric_screen
 from windows.views.credits_treeview import CreditsTreeView
 from windows.views.changelog_treeview import ChangelogTreeView
 
+import requests
+import threading
 import json
 import datetime
 
@@ -49,54 +51,30 @@ import openshot
 
 
 def parse_changelog(changelog_path):
-    """Read changelog entries from provided file path."""
+    """Parse changelog data from specified gitlab-ci generated file."""
+    if not os.path.exists(changelog_path):
+        return None
+    changelog_regex = re.compile(r'(\w{6,10})\s+(\d{4}-\d{2}-\d{2})\s+(.*)\s{2,99}?(.*)')
     changelog_list = []
-    if not os.path.exists(changelog_path):
-        return None
-    # Attempt to open changelog with utf-8, and then utf-16 (for unix / windows support)
-    for encoding_name in ('utf_8', 'utf_16'):
-        try:
-            with codecs.open(
-                    changelog_path, 'r', encoding=encoding_name
-                    ) as changelog_file:
-                for line in changelog_file:
-                    changelog_list.append({
-                        'hash': line[:9].strip(),
-                        'date': line[9:20].strip(),
-                        'author': line[20:45].strip(),
-                        'subject': line[45:].strip(),
-                        })
-                break
-        except Exception:
-            log.warning('Failed to parse log file %s with encoding %s' % (changelog_path, encoding_name))
-    return changelog_list
-
-
-def parse_new_changelog(changelog_path):
-    """Parse changelog data from specified new-format file."""
-    if not os.path.exists(changelog_path):
-        return None
-    changelog_list = None
-    for encoding_name in ('utf_8', 'utf_16'):
-        try:
-            with codecs.open(changelog_path, 'r', encoding=encoding_name) as changelog_file:
+    try:
+        with codecs.open(changelog_path, 'r', encoding='utf_8') as changelog_file:
+            # Split changelog safely (since multiline regex fails to parse the windows line endings correctly)
+            # All our log files use unit line endings (even on Windows)
+            change_log_lines = changelog_file.read().split("\n")
+            for change in change_log_lines:
                 # Generate match object with fields from all matching lines
-                matches = re.findall(
-                    r"^-\s?([0-9a-f]{40})\s(\d{4,4}-\d{2,2}-\d{2,2})\s(.*)\s\[(.*)\]\s*$",
-                    changelog_file.read(), re.MULTILINE)
-                log.debug("Parsed {} changelog lines from {}".format(len(matches), changelog_path))
-                changelog_list = [{
-                    "hash": entry[0],
-                    "date": entry[1],
-                    "subject": entry[2],
-                    "author": entry[3],
-                    } for entry in matches]
-        except UnicodeError:
-            log.debug('Failed to parse log file %s with encoding %s' % (changelog_path, encoding_name))
-            continue
-        except Exception:
-            log.warning("Parse error reading {}".format(changelog_path), exc_info=1)
-            return None
+                match = changelog_regex.findall(change)
+                if match:
+                    changelog_list.append({
+                        "hash": match[0][0].strip(),
+                        "date": match[0][1].strip(),
+                        "author": match[0][2].strip(),
+                        "subject": match[0][3].strip(),
+                        })
+    except Exception:
+        log.warning("Parse error reading {}".format(changelog_path), exc_info=1)
+        return None
+    log.debug("Parsed {} changelog lines from {}".format(len(changelog_list), changelog_path))
     return changelog_list
 
 
@@ -104,6 +82,7 @@ class About(QDialog):
     """ About Dialog """
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'about.ui')
+    releaseFound = pyqtSignal(str)
 
     def __init__(self):
         # Create dialog class
@@ -135,9 +114,7 @@ class About(QDialog):
             log.warn("No changelog files found, disabling button")
 
         create_text = _('Create &amp; Edit Amazing Videos and Movies')
-        description_text = _(
-            "OpenShot Video Editor 2.x is the next generation of the award-winning <br/>"
-            "OpenShot video editing platform.")
+        description_text = _("OpenShot Video Editor is an Award-Winning, Free, and<br> Open-Source Video Editor for Linux, Mac, and Windows.")
         learnmore_text = _('Learn more')
         copyright_text = _('Copyright &copy; %(begin_year)s-%(current_year)s') % {
             'begin_year': '2008',
@@ -151,7 +128,7 @@ class About(QDialog):
               </p>
               <p style="font-size:10pt;margin-bottom:12px;">%s
                 <a href="https://www.openshot.org/%s?r=about-us"
-                   style="text-decoration:none;">%s</a>.
+                   style="text-decoration:none;">%s</a>
               </p>
             </div>
             </body></html>
@@ -181,25 +158,81 @@ class About(QDialog):
         self.btnlicense.clicked.connect(self.load_license)
         self.btnchangelog.clicked.connect(self.load_changelog)
 
-        # Look for frozen version info
-        frozen_version_label = ""
-        version_path = os.path.join(info.PATH, "settings", "version.json")
-        if os.path.exists(version_path):
-            with open(version_path, "r", encoding="UTF-8") as f:
-                version_info = json.loads(f.read())
-                if version_info:
-                    frozen_version_label = "<br/><br/><b>%s</b><br/>Build Date: %s" % \
-                        (version_info.get('build_name'), version_info.get('date'))
-
-        # Init some variables
-        openshot_qt_version = _("Version: %s") % info.VERSION
-        libopenshot_version = "libopenshot: %s" % openshot.OPENSHOT_VERSION_FULL
-        self.txtversion.setText(
-            "<b>%s</b><br/>%s%s" % (openshot_qt_version, libopenshot_version, frozen_version_label))
-        self.txtversion.setAlignment(Qt.AlignCenter)
-
         # Track metrics
         track_metric_screen("about-screen")
+
+        # Connect signals
+        self.releaseFound.connect(self.display_release)
+
+        # Load release details from HTTP
+        self.get_current_release()
+
+    def display_release(self, version_text):
+
+        self.txtversion.setText(version_text)
+        self.txtversion.setAlignment(Qt.AlignCenter)
+
+    def get_current_release(self):
+        """Get the current version """
+        t = threading.Thread(target=self.get_release_from_http, daemon=True)
+        t.start()
+
+    def get_release_from_http(self):
+        """Get the current version # from openshot.org"""
+        RELEASE_URL = 'http://www.openshot.org/releases/%s/'
+
+        # Send metric HTTP data
+        try:
+            release_details = {}
+            r = requests.get(RELEASE_URL % info.VERSION,
+                             headers={"user-agent": "openshot-qt-%s" % info.VERSION}, verify=False)
+            if r.ok:
+                log.warning("Found current release: %s" % r.json())
+                release_details = r.json()
+            else:
+                log.warning("Failed to find current release: %s" % r.status_code)
+            release_git_SHA = release_details.get("sha", "")
+            release_notes = release_details.get("notes", "")
+
+            # get translations
+            self.app = get_app()
+            _ = self.app._tr
+
+            # Look for frozen version info
+            frozen_version_label = ""
+            version_path = os.path.join(info.PATH, "settings", "version.json")
+            if os.path.exists(version_path):
+                with open(version_path, "r", encoding="UTF-8") as f:
+                    version_info = json.loads(f.read())
+                    if version_info:
+                        frozen_git_SHA = version_info.get("openshot-qt", {}).get("CI_COMMIT_SHA", "")
+                        build_name = version_info.get('build_name')
+                        if frozen_git_SHA == release_git_SHA:
+                            # Remove -release-candidate... from build name
+                            log.warning("Official release detected with SHA (%s) for v%s" %
+                                        (release_git_SHA, info.VERSION))
+                            build_name = build_name.replace("-candidate", "")
+                            frozen_version_label = '<br/><br/><b>%s (Official)</b><br/>Release Date: %s<br><a href="%s" style="text-decoration:none;">Release Notes</a>' % \
+                                (build_name, version_info.get('date'), release_notes)
+                        else:
+                            # Display current build name - unedited
+                            log.warning("Build SHA (%s) does not match an official release SHA (%s) for v%s" %
+                                        (frozen_git_SHA, release_git_SHA, info.VERSION))
+                            frozen_version_label = "<br/><br/><b>%s</b><br/>Build Date: %s" % \
+                                (build_name, version_info.get('date'))
+
+            # Init some variables
+            openshot_qt_version = _("Version: %s") % info.VERSION
+            libopenshot_version = "libopenshot: %s" % openshot.OPENSHOT_VERSION_FULL
+
+            # emit release found
+            self.releaseFound.emit("<b>%s</b><br/>%s%s" % (openshot_qt_version,
+                                                           libopenshot_version,
+                                                           frozen_version_label))
+
+        except Exception as Ex:
+            log.error("Failed to get version from: %s" % RELEASE_URL % info.VERSION)
+
 
     def load_credit(self):
         """ Load Credits for everybody who has contributed in several domain for Openshot """
@@ -304,22 +337,26 @@ class Credits(QDialog):
 
         # Get string of translators for the current language
         translator_credits = []
+        unique_translators = []
         translator_credits_string = _("translator-credits").replace(
             "Launchpad Contributions:\n", ""
             ).replace("translator-credits", "")
         if translator_credits_string:
             # Parse string into a list of dictionaries
             translator_rows = translator_credits_string.split("\n")
-            for row in translator_rows:
+            stripped_rows = [s.strip().capitalize() for s in translator_rows if "Template-Name:" not in s]
+            for row in sorted(stripped_rows):
                 # Split each row into 2 parts (name and username)
                 translator_parts = row.split("https://launchpad.net/")
                 if len(translator_parts) >= 2:
-                    name = translator_parts[0].strip()
+                    name = translator_parts[0].strip().title()
                     username = translator_parts[1].strip()
-                    translator_credits.append({
-                        "name": name,
-                        "website": "https://launchpad.net/%s" % username
-                        })
+                    if username not in unique_translators:
+                        unique_translators.append(username)
+                        translator_credits.append({
+                            "name": name,
+                            "website": "https://launchpad.net/%s" % username
+                            })
 
             # Add translators listview
             self.translatorsListView = CreditsTreeView(
@@ -405,17 +442,12 @@ class Changelog(QDialog):
 
         # Read changelog file for each project
         for project in ['openshot-qt', 'libopenshot', 'libopenshot-audio']:
-            new_changelog_path = os.path.join(info.PATH, 'resources', '{}.log'.format(project))
-            old_changelog_path = os.path.join(info.PATH, 'settings', '{}.log'.format(project))
-            if os.path.exists(new_changelog_path):
-                log.debug("Reading changelog file: {}".format(new_changelog_path))
-                changelog_list = parse_new_changelog(new_changelog_path)
-            elif os.path.isfile(old_changelog_path):
-                log.debug("Reading legacy changelog file: {}".format(old_changelog_path))
-                changelog_list = parse_changelog(old_changelog_path)
+            changelog_path = os.path.join(info.PATH, 'settings', '{}.log'.format(project))
+            if os.path.exists(changelog_path):
+                log.debug("Reading changelog file: {}".format(changelog_path))
+                changelog_list = parse_changelog(changelog_path)
             else:
                 changelog_list = None
-            # Hopefully we found ONE of the two
             if changelog_list is None:
                 log.warn("Could not load changelog for {}".format(project))
                 # Hide the tab for this changelog

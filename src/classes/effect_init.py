@@ -61,7 +61,7 @@ effect_options = {
             "title": "Default Audio Sample Rate",
             "min": 22050,
             "setting": "default-samplerate",
-            "value": 44100,
+            "value": 48000,
             "values": [
                 {
                     "value": 22050,
@@ -149,7 +149,7 @@ effect_options = {
         }
     ],
 
-    "Object Detector": [
+    "ObjectDetection": [
         {
             "value": "https://github.com/OpenShot/openshot-qt/wiki/Object-Detection-Effect-(dependencies)",
             "title": "Click here for instructions and dependencies...",

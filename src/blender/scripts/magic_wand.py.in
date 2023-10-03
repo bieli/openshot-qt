@@ -119,7 +119,7 @@ bpy.data.scenes["Scene"].node_tree.nodes["Glare"].glare_type = params["glare_typ
 
 # Change particle settings
 psettings = bpy.data.particles["ParticleSettings"]
-psettings.count = params["particles_count"]
+psettings.count = int(params["particles_count"])
 psettings.lifetime = params["particles_lifetime"]
 psettings.effector_weights.gravity = params["particles_gravity"]
 psettings.object_align_factor = (
@@ -146,8 +146,8 @@ bpy.data.worlds["World"].color = params["horizon_color"]
 bpy.ops.ptcache.free_bake_all()
 
 # Animation Speed (use Blender's time remapping to slow or speed up animation)
-length_multiplier = int(params["length_multiplier"])  # time remapping multiplier
-new_length = int(params["end_frame"]) * length_multiplier  # new length (in frames)
+length_multiplier = round(params["length_multiplier"])  # time remapping multiplier
+new_length = params["end_frame"] * length_multiplier  # new length (in frames)
 render.frame_map_old = 1
 render.frame_map_new = length_multiplier
 

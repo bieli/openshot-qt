@@ -41,11 +41,11 @@ from PyQt5.QtGui import (
 )
 from classes import updates
 from classes import info
-from classes.image_types import is_image
+from classes.image_types import get_media_type
 from classes.query import File
 from classes.logger import log
 from classes.app import get_app
-from requests import get
+from classes.thumbnail import GetThumbPath
 
 import openshot
 
@@ -120,13 +120,13 @@ class FilesModel(QObject, updates.UpdateInterface):
                 # Don't clear the existing items if only deleting things
                 self.update_model(clear=False, delete_file_id=action.key[1].get('id', ''))
             elif action.type == "update" and action.key[0].lower() == "files":
-                # Do nothing for file updates
-                pass
+                # Update a single file (if found)
+                self.update_model(clear=False, update_file_id=action.key[1].get('id', ''))
             else:
                 # Clear existing items
                 self.update_model(clear=True)
 
-    def update_model(self, clear=True, delete_file_id=None):
+    def update_model(self, clear=True, delete_file_id=None, update_file_id=None):
         log.debug("updating files model.")
         app = get_app()
 
@@ -149,6 +149,24 @@ class FilesModel(QObject, updates.UpdateInterface):
             self.model.removeRows(row_num, 1, id_index.parent())
             self.model.submit()
             self.model_ids.pop(delete_file_id)
+
+        # Update a file (if update_file_id passed in)
+        if update_file_id in self.model_ids:
+            # Use the persistent index we stored to find the row
+            id_index = self.model_ids[update_file_id]
+
+            # sanity check
+            if not id_index.isValid() or update_file_id != id_index.data():
+                log.warning("Couldn't update {} in model!".format(update_file_id))
+                return
+
+            # lookup File object
+            f = File.get(id=update_file_id)
+            if f:
+                # Update "tags" in model (if different)
+                row_num = id_index.row()
+                if f.data.get("tags") != self.model.item(row_num, 2).text():
+                    self.model.item(row_num, 2).setText(f.data.get("tags"))
 
         # Clear all items
         if clear:
@@ -185,7 +203,7 @@ class FilesModel(QObject, updates.UpdateInterface):
                     thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
 
                 # Get thumb path
-                thumb_icon = QIcon(self.get_thumb_path(file.id, thumbnail_frame))
+                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
             else:
                 # Audio file
                 thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
@@ -243,9 +261,11 @@ class FilesModel(QObject, updates.UpdateInterface):
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
 
-    def add_files(self, files, image_seq_details=None, quiet=False):
+    def add_files(self, files, image_seq_details=None, quiet=False,
+                  prevent_image_seq=False, prevent_recent_folder=False):
         # Access translations
         app = get_app()
+        settings = app.get_settings()
         _ = app._tr
 
         # Make sure we're working with a list of files
@@ -273,64 +293,67 @@ class FilesModel(QObject, updates.UpdateInterface):
                 file_data = json.loads(reader.Json())
 
                 # Determine media type
-                if file_data["has_video"] and not is_image(file_data):
-                    file_data["media_type"] = "video"
-                elif file_data["has_video"] and is_image(file_data):
-                    file_data["media_type"] = "image"
-                elif file_data["has_audio"] and not file_data["has_video"]:
-                    file_data["media_type"] = "audio"
-                else:
-                    # If none set, just assume video
-                    file_data["media_type"] = "video"
+                file_data["media_type"] = get_media_type(file_data)
+
+                # Check for audio-only files
+                if file_data.get("has_audio") and not file_data.get("has_video"):
+                    # Audio-only file should match the current project size and FPS
+                    project = get_app().project
+                    file_data["width"] = project.get("width")
+                    file_data["height"] = project.get("height")
 
                 # Save new file to the project data
                 new_file = File()
                 new_file.data = file_data
 
                 # Is this an image sequence / animation?
-                seq_info = image_seq_details or self.get_image_sequence_details(filepath)
+                seq_info = None
+                if not prevent_image_seq:
+                    seq_info = image_seq_details or self.get_image_sequence_details(filepath)
 
                 if seq_info:
-                    # Update file with correct path
-                    folder_path = seq_info["folder_path"]
-                    base_name = seq_info["base_name"]
-                    fixlen = seq_info["fixlen"]
-                    digits = seq_info["digits"]
-                    extension = seq_info["extension"]
-
-                    if not fixlen:
-                        zero_pattern = "%d"
-                    else:
-                        zero_pattern = "%%0%sd" % digits
-
-                    # Generate the regex pattern for this image sequence
-                    pattern = "%s%s.%s" % (base_name, zero_pattern, extension)
-
-                    # Split folder name
-                    folderName = os.path.basename(folder_path)
-                    if not base_name:
-                        # Give alternate name
-                        new_file.data["name"] = "%s (%s)" % (folderName, pattern)
+                    # Update file with image sequence path & name
+                    new_path = seq_info.get("path")
 
                     # Load image sequence (to determine duration and video_length)
-                    image_seq = openshot.Clip(os.path.join(folder_path, pattern))
+                    clip = openshot.Clip(new_path)
+                    new_file.data = json.loads(clip.Reader().Json())
+                    if clip and clip.info.duration > 0.0:
+                        # Update file details
+                        new_file.data["media_type"] = "video"
+                        duration = new_file.data["duration"]
 
-                    # Update file details
-                    new_file.data["path"] = os.path.join(folder_path, pattern)
-                    new_file.data["media_type"] = "video"
-                    new_file.data["duration"] = image_seq.Reader().info.duration
-                    new_file.data["video_length"] = image_seq.Reader().info.video_length
+                        if seq_info and "fps" in seq_info and "length_multiplier" in seq_info:
+                            # Blender Titles specify their fps in seq_info
+                            fps_num = seq_info.get("fps", {}).get("num", 25)
+                            fps_den = seq_info.get("fps", {}).get("den", 1)
+                            log.debug("Image Sequence using specified FPS: %s / %s" % (fps_num, fps_den))
+                        else:
+                            # Get the project's fps, apply to the image sequence.
+                            fps_num = get_app().project.get("fps").get("num", 30)
+                            fps_den = get_app().project.get("fps").get("den", 1)
+                            log.debug("Image Sequence using project FPS: %s / %s" % (fps_num, fps_den))
 
-                    log.info('Imported {} as image sequence {}'.format(
-                        filepath, pattern))
+                        # Adjust FPS (difference between 25 FPS and actual FPS)
+                        duration *= 25.0 / (float(fps_num) / float(fps_den))
+                        new_file.data["duration"] = duration
+                        new_file.data["fps"] = {"num": fps_num, "den": fps_den}
+                        new_file.data["video_timebase"] = {"num": fps_den, "den": fps_num}
 
-                    # Remove any other image sequence files from the list we're processing
-                    match_glob = "{}{}.{}".format(base_name, '[0-9]*', extension)
-                    log.debug("Removing files from import list with glob: {}".format(match_glob))
-                    for seq_file in glob.iglob(os.path.join(folder_path, match_glob)):
-                        # Don't remove the current file, or we mess up the for loop
-                        if seq_file in files and seq_file != filepath:
-                            files.remove(seq_file)
+                        log.info(f"Imported '{new_path}' as image sequence with '{fps_num}/{fps_den}' FPS "
+                                 f"and '{duration}' duration")
+
+                        # Remove any other image sequence files from the list we're processing
+                        match_glob = "{}{}.{}".format(seq_info.get("base_name"), '[0-9]*', seq_info.get("extension"))
+                        log.debug("Removing files from import list with glob: {}".format(match_glob))
+                        for seq_file in glob.iglob(os.path.join(seq_info.get("folder_path"), match_glob)):
+                            # Don't remove the current file, or we mess up the for loop
+                            if seq_file in files and seq_file != filepath:
+                                files.remove(seq_file)
+                    else:
+                        # Failed to import image sequence
+                        log.info(f"Failed to parse image sequence pattern {new_path}, ignoring...")
+                        continue
 
                 if not seq_info:
                     # Log our not-an-image-sequence import
@@ -348,10 +371,9 @@ class FilesModel(QObject, updates.UpdateInterface):
 
                 # Let the event loop run to update the status bar
                 get_app().processEvents()
-
-                prev_path = app.project.get("import_path")
-                if dir_path != prev_path:
-                    app.updates.update_untracked(["import_path"], dir_path)
+                # Update the recent import path
+                if not prevent_recent_folder:
+                    settings.setDefaultPath(settings.actionType.IMPORT, dir_path)
 
             except Exception as ex:
                 # Log exception
@@ -419,13 +441,23 @@ class FilesModel(QObject, updates.UpdateInterface):
             # User said no, don't import as a sequence
             return None
 
+        # generate file glob pattern (for this image sequence)
+        if not fixlen:
+            zero_pattern = "%d"
+        else:
+            zero_pattern = "%%0%sd" % digits
+        pattern = "%s%s.%s" % (base_name, zero_pattern, extension)
+        new_file_path = os.path.join(dirName, pattern)
+
         # Yes, import image sequence
         parameters = {
             "folder_path": dirName,
             "base_name": base_name,
             "fixlen": fixlen,
             "digits": digits,
-            "extension": extension
+            "extension": extension,
+            "pattern": pattern,
+            "path": new_file_path
         }
         return parameters
 
@@ -460,35 +492,14 @@ class FilesModel(QObject, updates.UpdateInterface):
         log.debug("Importing file list: {}".format(media_paths))
         self.add_files(media_paths, quiet=import_quietly)
 
-    def get_thumb_path(
-            self, file_id, thumbnail_frame, clear_cache=False):
-        """Get thumbnail path by invoking HTTP thumbnail request"""
-
-        # Clear thumb cache (if requested)
-        thumb_cache = ""
-        if clear_cache:
-            thumb_cache = "no-cache/"
-
-        # Connect to thumbnail server and get image
-        thumb_server_details = get_app().window.http_server_thread.server_address
-        thumb_address = "http://%s:%s/thumbnails/%s/%s/path/%s" % (
-            thumb_server_details[0],
-            thumb_server_details[1],
-            file_id,
-            thumbnail_frame,
-            thumb_cache)
-        r = get(thumb_address)
-        if r.ok:
-            # Update thumbnail path to real one
-            return r.text
-        else:
-            return ''
-
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
         file = File.get(id=file_id)
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
+
+        fps = file.data["fps"]
+        fps_float = float(fps["num"]) / float(fps["den"])
 
         # Refresh thumbnail for updated file
         self.ignore_updates = True
@@ -500,11 +511,23 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
+            # Generate thumbnail for file (if needed)
+            if file.data.get("media_type") in ["video", "image"]:
+                # Check for start and end attributes (optional)
+                thumbnail_frame = 1
+                if 'start' in file.data:
+                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
+
+                # Get thumb path
+                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame, clear_cache=True))
+            else:
+                # Audio file
+                thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+
             # Update thumb for file
-            thumb_path = self.get_thumb_path(file_id, 1, clear_cache=True)
             thumb_index = id_index.sibling(id_index.row(), 0)
             item = m.itemFromIndex(thumb_index)
-            item.setIcon(QIcon(thumb_path))
+            item.setIcon(thumb_icon)
             item.setText(name)
 
             # Emit signal when model is updated
@@ -541,6 +564,19 @@ class FilesModel(QObject, updates.UpdateInterface):
         cur_id = self.current_file_id()
         if cur_id:
             return File.get(id=cur_id)
+        else:
+            return None
+
+    def value_updated(self, item):
+        """ Table cell change event - when tags are updated on a file"""
+        if item.column() == 2:
+            # Get updated tag value
+            tags_value = item.data(0)
+            f = self.current_file()
+            if f:
+                # Save tags to file object
+                f.data["tags"] = tags_value
+                f.save()
 
     def __init__(self, *args):
 
@@ -554,7 +590,6 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.model.setColumnCount(6)
         self.model_ids = {}
         self.ignore_updates = False
-
         self.ignore_image_sequence_paths = []
 
         # Create proxy model (for sorting and filtering)
@@ -564,6 +599,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.proxy_model.setSortCaseSensitivity(Qt.CaseSensitive)
         self.proxy_model.setSourceModel(self.model)
         self.proxy_model.setSortLocaleAware(True)
+
+        # Connect data changed signal
+        self.model.itemChanged.connect(self.value_updated)
 
         # Create selection model to share between views
         self.selection_model = QItemSelectionModel(self.proxy_model)

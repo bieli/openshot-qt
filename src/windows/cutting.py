@@ -27,6 +27,7 @@
 
 import os
 import functools
+import json
 
 from PyQt5.QtCore import pyqtSignal, QTimer
 from PyQt5.QtWidgets import QDialog, QMessageBox, QSizePolicy
@@ -50,7 +51,7 @@ class Cutting(QDialog):
     previewFrameSignal = pyqtSignal(int)
     refreshFrameSignal = pyqtSignal()
     LoadFileSignal = pyqtSignal(str)
-    PlaySignal = pyqtSignal(int)
+    PlaySignal = pyqtSignal()
     PauseSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
@@ -91,7 +92,7 @@ class Cutting(QDialog):
         self.fps = float(self.fps_num) / float(self.fps_den)
         self.width = int(file.data['width'])
         self.height = int(file.data['height'])
-        self.sample_rate = int(file.data['sample_rate'])
+        self.sample_rate = int(get_app().project.get("sample_rate"))
         self.channels = int(file.data['channels'])
         self.channel_layout = int(file.data['channel_layout'])
 
@@ -108,8 +109,8 @@ class Cutting(QDialog):
 
         # Create an instance of a libopenshot Timeline object
         self.r = openshot.Timeline(
-            self.videoPreview.width(),
-            self.videoPreview.height(),
+            viewport_rect.width(),
+            viewport_rect.height(),
             openshot.Fraction(self.fps_num, self.fps_den),
             self.sample_rate,
             self.channels,
@@ -120,6 +121,7 @@ class Cutting(QDialog):
         try:
             # Add clip for current preview file
             self.clip = openshot.Clip(self.file_path)
+            self.clip.SetJson(json.dumps({"reader": file.data}))
 
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
@@ -149,7 +151,7 @@ class Cutting(QDialog):
         self.initialized = False
         self.transforming_clip = False
         self.preview_parent = PreviewParent()
-        self.preview_parent.Init(self, self.r, self.videoPreview)
+        self.preview_parent.Init(self, self.r, self.videoPreview, self.video_length)
         self.preview_thread = self.preview_parent.worker
 
         # Set slider constraints
@@ -212,7 +214,7 @@ class Cutting(QDialog):
         if self.btnPlay.isChecked():
             log.info('play (icon to pause)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-pause")
-            self.preview_thread.Play(self.video_length)
+            self.preview_thread.Play()
         else:
             log.info('pause (icon to play)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-start")  # to default
@@ -363,12 +365,11 @@ class Cutting(QDialog):
         log.debug('closeEvent')
 
         # Stop playback
-        self.preview_parent.worker.Stop()
-
-        # Stop preview thread (and wait for it to end)
-        self.preview_parent.worker.kill()
-        self.preview_parent.background.exit()
-        self.preview_parent.background.wait(5000)
+        get_app().updates.disconnect_listener(self.videoPreview)
+        if self.videoPreview:
+            self.videoPreview.deleteLater()
+            self.videoPreview = None
+        self.preview_parent.Stop()
 
         # Close readers
         self.r.Close()

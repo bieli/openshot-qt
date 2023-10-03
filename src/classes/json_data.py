@@ -39,7 +39,7 @@ from classes import info
 from classes.app import get_app
 
 # Compiled path regex
-path_regex = re.compile(r'"(image|path)"\s*:\s*"(.*?)"')
+path_regex = re.compile(r'"(image|path|protobuf_data_path)"\s*:\s*"(.*)"')
 path_context = {}
 
 
@@ -93,10 +93,10 @@ class JsonDataStore:
                     user_values[item["setting"].lower()] = item["value"]
 
             # Settings data
-            return copy.deepcopy(user_values.get(key, None))
+            return json.loads(json.dumps(user_values.get(key, None)))
         else:
             # Project data (i.e dictionary)
-            return copy.deepcopy(self._data.get(key, None))
+            return json.loads(json.dumps(self._data.get(key, None)))
 
     def set(self, key, value):
         """ Store value in key """
@@ -234,6 +234,12 @@ class JsonDataStore:
         key = match.groups(0)[0]
         path = match.groups(0)[1]
 
+        # Convert escaped path back into python str.
+        # Some characters, such as backslashes and quotes
+        # are escaped during the JSON dumps() conversion.
+        #   /Videos/quote \\"/  instead of  /Videos/quote "/
+        path = json.loads('"%s"' % path)
+
         # Find absolute path of file (if needed)
         if "@transitions" in path:
             new_path = path.replace("@transitions", os.path.join(info.PATH, "transitions"))
@@ -277,6 +283,14 @@ class JsonDataStore:
         """Replace matched string for converting paths to relative paths"""
         key = match.groups(0)[0]
         path = match.groups(0)[1]
+
+        # Convert escaped path back into python str.
+        # Some characters, such as backslashes and quotes
+        # are escaped during the JSON dumps() conversion.
+        #   /Videos/quote \\"/  instead of  /Videos/quote "/
+        path = json.loads('"%s"' % path)
+
+        # Split path into folder and file
         folder_path, file_path = os.path.split(os.path.abspath(path))
 
         # Determine if thumbnail path is found

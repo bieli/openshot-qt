@@ -30,6 +30,7 @@ import re
 import openshot
 import socket
 import time
+from requests import get
 from threading import Thread
 from classes import info
 from classes.query import File
@@ -45,6 +46,30 @@ from socketserver import ThreadingMixIn
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1/
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
+
+
+def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
+    """Get thumbnail path by invoking HTTP thumbnail request"""
+
+    # Clear thumb cache (if requested)
+    thumb_cache = ""
+    if clear_cache:
+        thumb_cache = "no-cache/"
+
+    # Connect to thumbnail server and get image
+    thumb_server_details = get_app().window.http_server_thread.server_address
+    thumb_address = "http://%s:%s/thumbnails/%s/%s/path/%s" % (
+        thumb_server_details[0],
+        thumb_server_details[1],
+        file_id,
+        thumbnail_frame,
+        thumb_cache)
+    r = get(thumb_address)
+    if r.ok:
+        # Update thumbnail path to real one
+        return r.text
+    else:
+        return ''
 
 
 def GenerateThumbnail(file_path, thumb_path, thumbnail_frame, width, height, mask, overlay):
@@ -89,6 +114,11 @@ class httpThumbnailServer(ThreadingMixIn, HTTPServer):
         No further content needed, don't touch this. """
 
 
+class httpThumbnailException(Exception):
+    """ Custom exception if server cannot start. This can happen if a port does ot allow a connection
+        due to another program or due to a firewall. """
+
+
 class httpThumbnailServerThread(Thread):
     """ This class runs a HTTP thumbnail server inside a thread
         so we don't block the main thread with handle_request()."""
@@ -107,21 +137,39 @@ class httpThumbnailServerThread(Thread):
         self.thumbServer.shutdown()
 
     def run(self):
+        log.info("Starting thumbnail server listening on %s", self.server_address)
         self.running = True
-
-        # Start listening for HTTP requests (and check for shutdown every 0.5 seconds)
-        self.server_address = ('127.0.0.1', self.find_free_port())
-        self.thumbServer = httpThumbnailServer(self.server_address, httpThumbnailHandler)
-        self.thumbServer.daemon_threads = True
-        log.info(
-            "Starting thumbnail server listening on port %d",
-            self.server_address[1])
         self.thumbServer.serve_forever(0.5)
 
     def __init__(self):
+        """ Attempt to find an available port, and bind to that port for our thumbnail HTTP server.
+            If not able to bind to localhost or a specific port, return an exception (and quit OpenShot). """
         Thread.__init__(self)
         self.daemon = True
         self.server_address = None
+        self.running = False
+        self.thumbServer = None
+
+        exceptions = []
+        initial_port = self.find_free_port()
+        for attempt in range(3):
+            try:
+                # Configure server address and port for our HTTP thumbnail server
+                self.server_address = ('127.0.0.1', initial_port + attempt)
+                log.debug("Attempting to start thumbnail server listening on port %s", self.server_address)
+                self.thumbServer = httpThumbnailServer(self.server_address, httpThumbnailHandler)
+                self.thumbServer.daemon_threads = True
+                exceptions.clear()
+                break
+
+            except Exception as ex:
+                # Silently track each exception
+                # Return full list of exceptions (from each attempt, if no attempt is successful)
+                exceptions.append(f"{self.server_address} {ex}")
+
+        if exceptions:
+            # Return full list of attempts + exceptions if we failed to make a connection
+            raise httpThumbnailException("\n".join(exceptions))
 
 
 class httpThumbnailHandler(BaseHTTPRequestHandler):

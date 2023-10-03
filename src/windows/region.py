@@ -53,7 +53,7 @@ class SelectRegion(QDialog):
     previewFrameSignal = pyqtSignal(int)
     refreshFrameSignal = pyqtSignal()
     LoadFileSignal = pyqtSignal(str)
-    PlaySignal = pyqtSignal(int)
+    PlaySignal = pyqtSignal()
     PauseSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
@@ -82,7 +82,6 @@ class SelectRegion(QDialog):
 
         # Create region clip with Reader
         self.clip = openshot.Clip(clip.Reader())
-
         self.clip.Open()
 
         # Set region clip start and end
@@ -90,22 +89,20 @@ class SelectRegion(QDialog):
         self.clip.End(clip.End())
         self.clip.Id( get_app().project.generate_id() )
 
-        print("IDS {} {}".format(clip.Id(), self.clip.Id()))
-
         # Keep track of file object
         self.file = file
         self.file_path = file.absolute_path()
 
         c_info = clip.Reader().info
-        self.fps = c_info.fps.ToInt() #float(self.fps_num) / float(self.fps_den)
-        self.fps_num = self.fps #int(file.data['fps']['num'])
-        self.fps_den = 1 #int(file.data['fps']['den'])
-        self.width = c_info.width #int(file.data['width'])
-        self.height = c_info.height #int(file.data['height'])
-        self.sample_rate = c_info.sample_rate #int(file.data['sample_rate'])
-        self.channels = c_info.channels #int(file.data['channels'])
-        self.channel_layout = c_info.channel_layout #int(file.data['channel_layout'])
-        self.video_length = int(self.clip.Duration() * self.fps) + 1 #int(file.data['video_length'])
+        self.fps = c_info.fps.ToInt()
+        self.fps_num = c_info.fps.num
+        self.fps_den = c_info.fps.den
+        self.width = c_info.width
+        self.height = c_info.height
+        self.sample_rate = int(c_info.sample_rate)
+        self.channels = int(c_info.channels)
+        self.channel_layout = int(c_info.channel_layout)
+        self.video_length = int(self.clip.Duration() * self.fps) + 1
 
         # Apply effects to region frames
         for effect in clip.Effects():
@@ -128,14 +125,13 @@ class SelectRegion(QDialog):
         self.viewport_rect = self.videoPreview.centeredViewport(self.width, self.height)
 
         # Create an instance of a libopenshot Timeline object
-        self.r = openshot.Timeline(self.viewport_rect.width(), self.viewport_rect.height(), openshot.Fraction(self.fps_num, self.fps_den), self.sample_rate, self.channels, self.channel_layout)
+        self.r = openshot.Timeline(self.viewport_rect.width(), self.viewport_rect.height(),
+                                   openshot.Fraction(self.fps_num, self.fps_den),
+                                   self.sample_rate, self.channels, self.channel_layout)
         self.r.info.channel_layout = self.channel_layout
         self.r.SetMaxSize(self.viewport_rect.width(), self.viewport_rect.height())
 
         try:
-            # Add clip for current preview file
-            self.clip = openshot.Clip(self.file_path)
-
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
                 self.clip.Waveform(True)
@@ -159,7 +155,7 @@ class SelectRegion(QDialog):
         self.initialized = False
         self.transforming_clip = False
         self.preview_parent = PreviewParent()
-        self.preview_parent.Init(self, self.r, self.videoPreview)
+        self.preview_parent.Init(self, self.r, self.videoPreview, self.video_length)
         self.preview_thread = self.preview_parent.worker
 
         # Set slider constraints
@@ -167,17 +163,11 @@ class SelectRegion(QDialog):
         self.sliderVideo.setMinimum(1)
         self.sliderVideo.setMaximum(self.video_length)
         self.sliderVideo.setSingleStep(1)
-        self.sliderVideo.setSingleStep(1)
         self.sliderVideo.setPageStep(24)
 
-        # Determine if a start or end attribute is in this file
-        start_frame = 1
-        # if 'start' in self.file.data.keys():
-        #     start_frame = (float(self.file.data['start']) * self.fps) + 1
-
         # Display start frame (and then the previous frame)
-        QTimer.singleShot(500, functools.partial(self.sliderVideo.setValue, start_frame + 1))
-        QTimer.singleShot(600, functools.partial(self.sliderVideo.setValue, start_frame))
+        QTimer.singleShot(500, functools.partial(self.sliderVideo.setValue, 2))
+        QTimer.singleShot(600, functools.partial(self.sliderVideo.setValue, 1))
 
         # Add buttons
         self.cancel_button = QPushButton(_('Cancel'))
@@ -227,7 +217,7 @@ class SelectRegion(QDialog):
         if self.btnPlay.isChecked():
             log.info('play (icon to pause)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-pause")
-            self.preview_thread.Play(self.video_length)
+            self.preview_thread.Play()
         else:
             log.info('pause (icon to play)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-start")  # to default
@@ -238,7 +228,7 @@ class SelectRegion(QDialog):
 
     def sliderVideo_valueChanged(self, new_frame):
         if self.preview_thread and not self.sliderIgnoreSignal:
-            log.info('sliderVideo_valueChanged')
+            log.info('sliderVideo_valueChanged: %s' % new_frame)
 
             # Pause video
             self.btnPlay_clicked(force="pause")
@@ -258,12 +248,7 @@ class SelectRegion(QDialog):
         log.info('shutdownPlayer')
 
         # Stop playback
-        self.preview_parent.worker.Stop()
-
-        # Stop preview thread (and wait for it to end)
-        self.preview_parent.worker.kill()
-        self.preview_parent.background.exit()
-        self.preview_parent.background.wait(5000)
+        self.preview_parent.Stop()
 
         # Close readers
         self.clip.Close()

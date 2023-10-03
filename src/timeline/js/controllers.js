@@ -40,7 +40,7 @@ App.controller("TimelineCtrl", function ($scope) {
     duration: 300, //length of project in seconds
     scale: 16.0, //seconds per tick
     tick_pixels: 100, //pixels between tick mark
-    playhead_position: 10, //position of play head
+    playhead_position: 0.0, //position of play head
     clips: [],
     effects: [],
     layers: [
@@ -154,7 +154,7 @@ App.controller("TimelineCtrl", function ($scope) {
   $scope.selectPoint = function(object, point) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
     var clip_position_frames = object.position * frames_per_second;
-    var absolute_seek_frames = clip_position_frames + parseInt(point);
+    var absolute_seek_frames = clip_position_frames + parseInt(point) - (object.start * frames_per_second);
 
     if ($scope.Qt) {
       timeline.SeekToKeyframe(absolute_seek_frames)
@@ -372,60 +372,16 @@ App.controller("TimelineCtrl", function ($scope) {
     clip_selector.attr("src", existing_thumb_path);
   };
 
-  // Set the audio data for a clip
-  $scope.setAudioData = function (clip_id, audio_data) {
-    // Find matching clip
-    for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
-      if ($scope.project.clips[clip_index].id === clip_id) {
-        // Set audio data
-        $scope.$apply(function () {
-          $scope.project.clips[clip_index].audio_data = audio_data;
-          $scope.project.clips[clip_index].show_audio = true;
-        });
-        timeline.qt_log("DEBUG", "Audio data successful set on clip JSON");
-        break;
-      }
-
-      // Draw audio data
-      drawAudio($scope, clip_id);
-    }
-  };
-
-  // Hide the audio waveform for a clip
-  $scope.hideAudioData = function (clip_id) {
-    // Find matching clip
-    for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
-      if ($scope.project.clips[clip_index].id === clip_id) {
-        // Set audio data
-        $scope.$apply(function () {
-          $scope.project.clips[clip_index].show_audio = false;
-          $scope.project.clips[clip_index].audio_data = [];
-        });
-        break;
-      }
-    }
-  };
-
-  // Redraw all audio waveforms on the timeline (if any)
+  // Redraw all audio waveforms on the timeline (for example, if the screen is resized)
   $scope.reDrawAllAudioData = function () {
-    // Find matching clip
+    // Loop through all clips (and look for audio data)
     for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
-      if ("audio_data" in $scope.project.clips[clip_index] && $scope.project.clips[clip_index].audio_data.length > 0) {
-        // Redraw audio data (since it has audio data)
+      if ("ui" in $scope.project.clips[clip_index] && "audio_data" in $scope.project.clips[clip_index].ui
+        && $scope.project.clips[clip_index].ui.audio_data.length > 1) {
+        // Redraw audio data
         drawAudio($scope, $scope.project.clips[clip_index].id);
       }
     }
-  };
-
-  // Does clip have audio_data?
-  $scope.hasAudioData = function (clip_id) {
-    // Find matching clip
-    for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
-      if ($scope.project.clips[clip_index].id === clip_id && "audio_data" in $scope.project.clips[clip_index] && $scope.project.clips[clip_index].audio_data.length > 0) {
-        return true;
-      }
-    }
-    return false;
   };
 
   $scope.setPropertyFilter = function (property) {
@@ -498,7 +454,7 @@ App.controller("TimelineCtrl", function ($scope) {
         return "#ff9700";
       case "Noise":
         return "#a9a9a9";
-      case "Object Detector":
+      case "ObjectDetection":
         return "#636363";
       case "Parametric EQ":
         return "#708090";
@@ -544,7 +500,6 @@ App.controller("TimelineCtrl", function ($scope) {
 
   // Update cache json
   $scope.renderCache = function (cache_json) {
-    // Push new clip onto stack
     $scope.project.progress = cache_json;
 
     //clear the canvas first
@@ -554,26 +509,27 @@ App.controller("TimelineCtrl", function ($scope) {
 
     // Determine fps & and get cached ranges
     var fps = $scope.project.fps.num / $scope.project.fps.den;
-    var progress = $scope.project.progress.ranges;
+    if ($scope.project.progress && $scope.project.progress.hasOwnProperty('ranges')) {
+        // Loop through each cached range of frames, and draw rect
+        let progress = $scope.project.progress.ranges;
+        for (var p = 0; p < progress.length; p++) {
+          //get the progress item details
+          var start_second = parseFloat(progress[p]["start"]) / fps;
+          var stop_second = parseFloat(progress[p]["end"]) / fps;
 
-    // Loop through each cached range of frames, and draw rect
-    for (var p = 0; p < progress.length; p++) {
-      //get the progress item details
-      var start_second = parseFloat(progress[p]["start"]) / fps;
-      var stop_second = parseFloat(progress[p]["end"]) / fps;
-
-      //figure out the actual pixel position, constrained by max width
-      var start_pixel = $scope.canvasMaxWidth(start_second * $scope.pixelsPerSecond);
-      var stop_pixel = $scope.canvasMaxWidth(stop_second * $scope.pixelsPerSecond);
-      var rect_length = stop_pixel - start_pixel;
-      if (rect_length < 1) {
-        break;
-      }
-      //get the element and draw the rects
-      ctx.beginPath();
-      ctx.rect(start_pixel, 0, rect_length, 5);
-      ctx.fillStyle = "#4B92AD";
-      ctx.fill();
+          //figure out the actual pixel position, constrained by max width
+          var start_pixel = $scope.canvasMaxWidth(start_second * $scope.pixelsPerSecond);
+          var stop_pixel = $scope.canvasMaxWidth(stop_second * $scope.pixelsPerSecond);
+          var rect_length = stop_pixel - start_pixel;
+          if (rect_length < 1) {
+            continue;
+          }
+          //get the element and draw the rects
+          ctx.beginPath();
+          ctx.rect(start_pixel, 0, rect_length, 5);
+          ctx.fillStyle = "#4B92AD";
+          ctx.fill();
+        }
     }
   };
 
@@ -623,7 +579,7 @@ App.controller("TimelineCtrl", function ($scope) {
       $scope.selectTransition("", true);
     }
     // Call slice method and exit (don't actually select the clip)
-    if (id !== "" && $scope.enable_razor && $scope.Qt && event) {
+    if (id !== "" && $scope.enable_razor && $scope.Qt && typeof event !== 'undefined') {
       var cursor_seconds = $scope.getJavaScriptPosition(event.clientX, null).position;
       timeline.RazorSliceAtCursor(id, "", cursor_seconds);
 
@@ -676,7 +632,7 @@ App.controller("TimelineCtrl", function ($scope) {
       $scope.selectClip("", true);
     }
     // Call slice method and exit (don't actually select the transition)
-    if (id !== "" && $scope.enable_razor && $scope.Qt && event) {
+    if (id !== "" && $scope.enable_razor && $scope.Qt && typeof event !== 'undefined') {
       var cursor_seconds = $scope.getJavaScriptPosition(event.clientX, null).position;
       timeline.RazorSliceAtCursor("", id, cursor_seconds);
 
@@ -719,7 +675,6 @@ App.controller("TimelineCtrl", function ($scope) {
   // Format the thumbnail path: http://127.0.0.1:8081/thumbnails/FILE-ID/FRAME-NUMBER/
   /**
    * @return {string}
-   * @return {string}
    */
   $scope.getThumbPath = function (clip) {
     var has_video = clip["reader"]["has_video"];
@@ -743,9 +698,12 @@ App.controller("TimelineCtrl", function ($scope) {
     return Math.min(32767, desired_width);
   };
 
-// Find the furthest right edge on the timeline (and resize it if too small)
+// Find the furthest right edge on the timeline (and resize it if too small or too large)
   $scope.resizeTimeline = function () {
-    // Unselect all clips
+    let max_timeline_padding = 20;
+    let min_timeline_padding = 10;
+    let min_timeline_length = 300; // Length of the default OpenShot project
+    // Find latest end of a clip
     var furthest_right_edge = 0;
     for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
       var clip = $scope.project.clips[clip_index];
@@ -755,10 +713,10 @@ App.controller("TimelineCtrl", function ($scope) {
       }
     }
     // Resize timeline
-    if (furthest_right_edge > $scope.project.duration) {
+    if (furthest_right_edge > $scope.project.duration - min_timeline_padding || furthest_right_edge < $scope.project.duration - max_timeline_padding) {
       if ($scope.Qt) {
-        timeline.resizeTimeline(furthest_right_edge + 10);
-        $scope.project.duration = furthest_right_edge + 10;
+        let new_timeline_length = Math.max(min_timeline_length, furthest_right_edge + min_timeline_padding);
+        timeline.resizeTimeline(new_timeline_length);
       }
     }
   };
@@ -766,57 +724,71 @@ App.controller("TimelineCtrl", function ($scope) {
 // Show clip context menu
   $scope.showClipMenu = function (clip_id, event) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showClipMenu");
-      $scope.selectClip(clip_id, false, event);
-      timeline.ShowClipMenu(clip_id);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showClipMenu");
+        $scope.selectClip(clip_id, false, event);
+        timeline.ShowClipMenu(clip_id);
+      });
     }
   };
 
 // Show clip context menu
   $scope.showEffectMenu = function (effect_id) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showEffectMenu");
-      timeline.ShowEffectMenu(effect_id);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showEffectMenu");
+        timeline.ShowEffectMenu(effect_id);
+      });
     }
   };
 
 // Show transition context menu
   $scope.showTransitionMenu = function (tran_id, event) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showTransitionMenu");
-      $scope.selectTransition(tran_id, false, event);
-      timeline.ShowTransitionMenu(tran_id);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showTransitionMenu");
+        $scope.selectTransition(tran_id, false, event);
+        timeline.ShowTransitionMenu(tran_id);
+      });
     }
   };
 
 // Show track context menu
   $scope.showTrackMenu = function (layer_id) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showTrackMenu");
-      timeline.ShowTrackMenu(layer_id);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showTrackMenu");
+        timeline.ShowTrackMenu(layer_id);
+      });
     }
   };
 
 // Show marker context menu
   $scope.showMarkerMenu = function (marker_id) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showMarkerMenu");
-      timeline.ShowMarkerMenu(marker_id);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showMarkerMenu");
+        timeline.ShowMarkerMenu(marker_id);
+      });
     }
   };
 
   // Show playhead context menu
   $scope.showPlayheadMenu = function (position) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.qt_log("DEBUG", "$scope.showPlayheadMenu");
-      timeline.ShowPlayheadMenu(position);
+      setTimeout(function() {
+        timeline.qt_log("DEBUG", "$scope.showPlayheadMenu");
+        timeline.ShowPlayheadMenu(position);
+      });
     }
   };
 
   // Show timeline context menu
   $scope.showTimelineMenu = function (e, layer_number) {
     if ($scope.Qt && !$scope.enable_razor) {
-      timeline.ShowTimelineMenu($scope.getJavaScriptPosition(e.pageX, null).position, layer_number);
+      setTimeout(function() {
+        timeline.ShowTimelineMenu($scope.getJavaScriptPosition(e.pageX, null).position, layer_number);
+      });
     }
   };
 
@@ -887,7 +859,7 @@ App.controller("TimelineCtrl", function ($scope) {
   };
 
   // Get JSON of most recent item (used by Qt)
-  $scope.updateRecentItemJSON = function (item_type, item_id) {
+  $scope.updateRecentItemJSON = function (item_type, item_id, item_tid) {
 
     // Find item in JSON
     var item_object = null;
@@ -915,10 +887,10 @@ App.controller("TimelineCtrl", function ($scope) {
 
     // update clip in Qt (very important =)
     if (item_type === "clip") {
-      timeline.update_clip_data(JSON.stringify(item_object), true, true, false);
+      timeline.update_clip_data(JSON.stringify(item_object), true, true, false, item_tid);
     }
     else if (item_type === "transition") {
-      timeline.update_transition_data(JSON.stringify(item_object), true, false);
+      timeline.update_transition_data(JSON.stringify(item_object), true, false, item_tid);
     }
 
     // Resize timeline if it's too small to contain all clips
@@ -1309,11 +1281,15 @@ App.controller("TimelineCtrl", function ($scope) {
    */
   $scope.getTrackAtY = function (y) {
     // Loop through each layer (looking for the closest track based on Y coordinate)
+    let tolerance = 24;
     for (var layer_index = $scope.project.layers.length - 1; layer_index >= 0; layer_index--) {
       var layer = $scope.project.layers[layer_index];
 
       // Compare position of track to Y param and return first matching layer
-      if (layer.y > y) {
+      // Consider a tolerance around the cursor position
+      if (layer.y > (y - tolerance)) {
+        return layer;
+      } else if (layer.y > (y + tolerance)) {
         return layer;
       }
     }
@@ -1362,6 +1338,21 @@ App.controller("TimelineCtrl", function ($scope) {
       style += "razor_cursor";
     }
     return style;
+  };
+
+  // Determine which z-index to assign for a clip / transition.
+  // Selected items z-index should be larger than unselected items.
+  // The index is passed in, and represents the current position
+  // in the render loop (1, 2, 3, etc...)
+  $scope.getZindex = function (item, starting_index, index) {
+    let unselected_zindex = starting_index;
+    let selected_zindex = starting_index + 1000;
+
+    if (item.selected) {
+      return selected_zindex + index;
+    } else {
+      return unselected_zindex + index;
+    }
   };
 
   $scope.markerPath = function(marker) {
@@ -1463,10 +1454,7 @@ App.controller("TimelineCtrl", function ($scope) {
           // Update: If action and current object are Objects
           if (current_object.constructor === Object && action.value.constructor === Object) {
             for (var update_key in action.value) {
-              if (update_key in current_object) {
-                // Only copy over keys that exist in both action and current_object
-                current_object[update_key] = action.value[update_key];
-              }
+              current_object[update_key] = action.value[update_key];
             }
           }
           else {
@@ -1496,6 +1484,10 @@ App.controller("TimelineCtrl", function ($scope) {
         $scope.updateLayerIndex();
       }
     }
+
+    // Apply all changes
+    $scope.$apply();
+
     // return true
     return true;
   };
@@ -1528,8 +1520,11 @@ App.controller("TimelineCtrl", function ($scope) {
       scrollLeft: 0
     }, "slow");
 
-    // Update playhead position and time readout
-    $scope.movePlayhead($scope.project.playhead_position);
+    // Update playhead position and time readout (reset to zero)
+    $scope.movePlayhead(0.0);
+
+    // Apply all changes
+    $scope.$apply();
 
     // return true
     return true;

@@ -69,27 +69,15 @@ App.directive("tlTrack", function ($timeout) {
           var ui_selected = $(".ui-selected");
           var selected_item_count = ui_selected.length;
 
+          // Get uuid to group all these updates as a single transaction
+          var tid = uuidv4();
+          var drop_track_num = -1;
+
           // with each dragged clip, find out which track they landed on
           // Loop through each selected item, and remove the selection if multiple items are selected
           // If only 1 item is selected, leave it selected
           ui_selected.each(function (index) {
             var item = $(this);
-
-            // Remove all selections
-            if (ui_selected.length > 1) {
-              for (var clip_index = 0; clip_index < scope.project.clips.length; clip_index++) {
-                scope.project.clips[clip_index].selected = false;
-                if (scope.Qt) {
-                  timeline.removeSelection(scope.project.clips[clip_index].id.replace("clip_", ""), "clip");
-                }
-              }
-              for (var tran_index = 0; tran_index < scope.project.effects.length; tran_index++) {
-                scope.project.effects[tran_index].selected = false;
-                if (scope.Qt) {
-                  timeline.removeSelection(scope.project.effects[tran_index].id.replace("transition_", ""), "transition");
-                }
-              }
-            }
 
             // Determine type of item
             var item_type = null;
@@ -118,13 +106,13 @@ App.directive("tlTrack", function ($timeout) {
             }
 
             // get track the item was dropped on
-            var drop_track_num = findTrackAtLocation(scope, parseInt(item_middle, 10));
+            drop_track_num = findTrackAtLocation(scope, parseInt(item_middle, 10));
 
             // if the droptrack was found, update the json
             if (drop_track_num !== -1) {
 
               // find the item in the json data
-              item_data = null;
+              let item_data = null;
               if (item_type === "clip") {
                 item_data = findElement(scope.project.clips, "id", item_num);
               } else if (item_type === "transition") {
@@ -156,9 +144,9 @@ App.directive("tlTrack", function ($timeout) {
 
               // update clip in Qt (very important =)
               if (scope.Qt && item_type === "clip") {
-                timeline.update_clip_data(JSON.stringify(item_data), true, true, !needs_refresh);
+                timeline.update_clip_data(JSON.stringify(item_data), true, true, !needs_refresh, tid);
               } else if (scope.Qt && item_type === "transition") {
-                timeline.update_transition_data(JSON.stringify(item_data), true, !needs_refresh);
+                timeline.update_transition_data(JSON.stringify(item_data), true, !needs_refresh, tid);
               }
 
 

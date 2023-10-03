@@ -33,6 +33,7 @@ import re
 import functools
 import shlex
 import json
+from time import sleep
 
 # Try to get the security-patched XML functions from defusedxml
 try:
@@ -63,7 +64,6 @@ class BlenderListView(QListView):
 
     # Our signals
     start_render = pyqtSignal(str, str, int)
-    cancel_render = pyqtSignal()
 
     def currentChanged(self, selected, deselected):
         # Get selected item
@@ -217,6 +217,11 @@ class BlenderListView(QListView):
         self.params[param["name"]] = value
         log.info('Animation param %s set to %s' % (param["name"], value))
         if param["name"] == "length_multiplier":
+            # Convert value to float (and multiply with project FPS diff)
+            # This converts all length_multipliers to the correct project FPS reference.
+            # For example, a 1X multiplier would be 1.2X for a 30 FPS project
+            # using a 25 FPS animated title - to scale up to the correct # of frames.
+            self.params[param["name"]] = float(value) * self.project_fps_diff
             self.init_slider_values()
 
     def color_button_clicked(self, widget, param, index):
@@ -289,7 +294,7 @@ class BlenderListView(QListView):
         """ Init the slider and preview frame label to the currently selected animation """
 
         # Get current preview slider frame
-        length = int(self.params.get("end_frame", 1)) * int(self.params.get("length_multiplier", 1))
+        length = int(self.params.get("end_frame", 1) * self.params.get("length_multiplier", 1.0))
 
         # Update the preview slider
         middle_frame = int(length / 2)
@@ -308,20 +313,24 @@ class BlenderListView(QListView):
             return
 
         # Compose image sequence data
+        filename = "{}%04d.png".format(self.params["file_name"])
         seq_params = {
             "folder_path": os.path.join(info.BLENDER_PATH, self.unique_folder_name),
             "base_name": self.params["file_name"],
             "fixlen": True,
             "digits": 4,
-            "extension": "png"
+            "extension": "png",
+            "fps": {
+                "num": self.fps.get("num", 25),
+                "den": self.fps.get("den", 1)
+            },
+            "pattern": filename,
+            "path": os.path.join(os.path.join(info.BLENDER_PATH, self.unique_folder_name), filename)
         }
-
-        filename = "{}%04d.png".format(seq_params["base_name"])
-        final_path = os.path.join(seq_params["folder_path"], filename)
         log.info('RENDER FINISHED! Adding to project files: {}'.format(filename))
 
         # Add to project files
-        get_app().window.files_model.add_files(final_path, seq_params)
+        get_app().window.files_model.add_files(seq_params.get("path"), seq_params, prevent_recent_folder=True)
 
         # We're done here
         self.win.close()
@@ -364,7 +373,7 @@ class BlenderListView(QListView):
         # update label and preview slider
         self.win.sliderPreview.setValue(current_frame)
 
-        length = int(self.params.get("end_frame", 1)) * int(self.params.get("length_multiplier", 1))
+        length = int(self.params.get("end_frame", 1) * self.params.get("length_multiplier", 1.0))
         self.win.lblFrame.setText("{}/{}".format(current_frame, length))
 
     @pyqtSlot(int)
@@ -374,7 +383,7 @@ class BlenderListView(QListView):
             self.preview_timer.start()
 
         # Update preview label
-        length = int(self.params.get("end_frame", 1)) * int(self.params.get("length_multiplier", 1))
+        length = int(self.params.get("end_frame", 1) * self.params.get("length_multiplier", 1.0))
         self.win.lblFrame.setText("{}/{}".format(new_value, length))
 
     def preview_timer_onTimeout(self):
@@ -389,16 +398,15 @@ class BlenderListView(QListView):
     def get_animation_details(self):
         """ Build a dictionary of all animation settings and properties from XML """
 
-        if not self.selected:
-            return {}
-        elif self.selected and self.selected.row() == -1:
+        # Get current selection (if any)
+        current = self.selectionModel().currentIndex()
+        if not current.isValid():
             return {}
 
         # Get all selected rows items
-        ItemRow = self.blender_model.model.itemFromIndex(self.selected).row()
-        animation_title = self.blender_model.model.item(ItemRow, 1).text()
-        xml_path = self.blender_model.model.item(ItemRow, 2).text()
-        service = self.blender_model.model.item(ItemRow, 3).text()
+        animation_title = current.sibling(current.row(), 1).data(Qt.DisplayRole)
+        xml_path = current.sibling(current.row(), 2).data(Qt.DisplayRole)
+        service = current.sibling(current.row(), 3).data(Qt.DisplayRole)
 
         # load xml effect file
         xmldoc = xml.parse(xml_path)
@@ -449,6 +457,9 @@ class BlenderListView(QListView):
 
     def refresh_view(self):
         self.blender_model.update_model()
+
+        # Sort by column 0
+        self.blender_model.proxy_model.sort(0)
 
     def get_project_params(self, is_preview=True):
         """ Return a dictionary of project related settings, needed by the Blender python script. """
@@ -535,7 +546,7 @@ Blender Path: {}
         # prepare string to inject
         user_params = "\n#BEGIN INJECTING PARAMS\n"
 
-        param_data = copy.deepcopy(self.params)
+        param_data = json.loads(json.dumps(self.params))
         param_data.update(self.get_project_params(is_preview))
 
         param_serialization = json.dumps(param_data)
@@ -584,8 +595,8 @@ Blender Path: {}
 
     def Cancel(self):
         """Cancel the current render, if any"""
-        #QMetaObject.invokeMethod(self.worker, 'Cancel', Qt.DirectConnection)
-        self.cancel_render.emit()
+        if "worker" in dir(self):
+            self.worker.Cancel()
 
     def Render(self, frame=None):
         """ Render an images sequence of the current template using Blender 2.62+ and the
@@ -615,7 +626,6 @@ Blender Path: {}
         self.background.started.connect(self.worker.Render)
 
         self.worker.render_complete.connect(self.render_finished)
-        self.cancel_render.connect(self.worker.Cancel)
 
         # State changes
         self.worker.end_processing.connect(self.end_processing)
@@ -641,7 +651,7 @@ Blender Path: {}
         self.inject_params(source_script, target_script, frame)
 
         # Note whether we're rendering a preview or an animation
-        self.final_render = bool(frame is None)
+        self.final_render = frame is None
 
         # Run worker in background thread
         self.background.start()
@@ -668,6 +678,15 @@ Blender Path: {}
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self.preview_timer_onTimeout)
 
+        # Calculate diff between project FPS and title FPS
+        # All animated titles are created at an assumed default 25.0 FPS
+        self.fps = self.app.project.get("fps")
+        fps_float = self.fps["num"] / float(self.fps["den"])
+
+        # NOTE: Blender can only use INT precision when remapping
+        # frames. 1X, 2X, 3X, etc...  not 1.2X
+        self.project_fps_diff = round(fps_float / 25.0)
+
         # Init dictionary which holds the values to the template parameters
         self.params = {}
 
@@ -678,7 +697,7 @@ Blender Path: {}
         self.processing_mode(cursor=False)
 
         # Setup header columns
-        self.setModel(self.blender_model.model)
+        self.setModel(self.blender_model.proxy_model)
         self.setIconSize(info.LIST_ICON_SIZE)
         self.setGridSize(info.LIST_GRID_SIZE)
         self.setViewMode(QListView.IconMode)
@@ -724,7 +743,7 @@ class Worker(QObject):
 
         # Init regex expression used to determine blender's render progress
         self.blender_version_re = re.compile(
-            r"^Blender ([0-9a-z\.]*)", flags=re.MULTILINE)
+            r"Blender ([0-9a-z\.]*)", flags=re.MULTILINE)
         self.blender_frame_re = re.compile(r"Fra:([0-9,]+)")
         self.blender_saved_re = re.compile(r"Saved: '(.*\.png)")
         self.blender_syncing_re = re.compile(
@@ -736,19 +755,26 @@ class Worker(QObject):
         self.process = None
         self.canceled = False
 
+        # Get environment variables needed for launching a process without trying to load libraries
+        # from our frozen app bundle
+        self.env = dict(os.environ)
+        if sys.platform == "linux":
+            self.env.pop('LD_LIBRARY_PATH', None)
+            log.debug('Removing custom LD_LIBRARY_PATH from environment variables when launching Blender')
+
         self.startupinfo = None
         if sys.platform == 'win32':
             self.startupinfo = subprocess.STARTUPINFO()
             self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-    @pyqtSlot()
     def Cancel(self):
         """Cancel worker render"""
         if self.process:
-            # Stop blender process if running
-            self.process.terminate()
+            while self.process and self.process.poll() == None:
+                log.debug("Terminating Blender Process")
+                self.process.terminate()
+                sleep(0.1)
         self.canceled = True
-        self.finished.emit()
 
     def blender_version_check(self):
         # Check the version of Blender
@@ -766,7 +792,7 @@ class Worker(QObject):
             self.process = subprocess.Popen(
                 command_get_version,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                startupinfo=self.startupinfo,
+                startupinfo=self.startupinfo, env=self.env
             )
             # Give Blender up to 10 seconds to respond
             (out, err) = self.process.communicate(timeout=10)
@@ -876,7 +902,7 @@ class Worker(QObject):
             self.process = subprocess.Popen(
                 command_render, bufsize=512,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                startupinfo=self.startupinfo,
+                startupinfo=self.startupinfo, env=self.env
             )
             # Signal UI that background task is running
             self.start_processing.emit()
@@ -898,8 +924,6 @@ class Worker(QObject):
             self.end_processing.emit()
             log.info("Blender process exited, %d frames saved.", self.frame_count)
 
-            if self.canceled:
-                return
             if self.frame_count < 1:
                 log.warning("No frame detected from Blender!")
                 log.warning("Blender output:\n{}".format(

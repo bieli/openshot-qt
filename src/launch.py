@@ -44,6 +44,13 @@ import sys
 import os
 import argparse
 
+try:
+    # This needs to be imported before PyQt5
+    # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
+    import openshot
+except ImportError:
+    pass
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
@@ -208,8 +215,8 @@ def main():
         print("   availableSizes: %s" % screen.availableSize())
 
     # Launch GUI and start event loop
-    app.gui()
-    sys.exit(app.exec_())
+    if app.gui():
+        sys.exit(app.exec_())
 
 
 if __name__ == "__main__":

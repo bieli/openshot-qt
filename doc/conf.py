@@ -33,7 +33,8 @@ from classes import info
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.extlinks'
+    'sphinx.ext.extlinks',
+    'sphinx_markdown_builder'
 ]
 
 try:
@@ -57,11 +58,9 @@ except ImportError:
 extlinks = {
     # alias: (url_template, prefix)
     'openshot-github':
-        ('https://github.com/OpenShot/%s', ''),
+        ('https://github.com/OpenShot/%s', '%s'),
     'libopenshot-wiki':
-        ('https://github.com/OpenShot/libopenshot/wiki/%s', ''),
-    'openshot-issue':
-        ('https://github.com/OpenShot/openshot-qt/issues/%s', 'issue ')
+        ('https://github.com/OpenShot/libopenshot/wiki/%s', '%s'),
 }
 
 # Add any paths that contain templates here, relative to this directory.
@@ -99,7 +98,7 @@ release = info.VERSION
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = "en"
 
 # There are two options for replacing |today|: either, you set today to some
 # non-false value, then it is used:
@@ -271,6 +270,8 @@ htmlhelp_basename = 'OpenShotVideoEditordoc'
 # -- Options for LaTeX output ---------------------------------------------
 
 latex_elements = {
+    # Export PDF without blank pages
+    'extraclassoptions': 'openany,oneside'
     # The paper size ('letterpaper' or 'a4paper').
     #
     # 'papersize': 'letterpaper',
@@ -293,7 +294,7 @@ latex_elements = {
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
     (master_doc, 'OpenShotVideoEditor.tex', 'OpenShot Video Editor Documentation',
-     'Jonathan Thomas', 'manual'),
+     'OpenShot Studios, LLC', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of

@@ -132,15 +132,23 @@ if os.path.exists(openshot_copy_path):
     sys.path.append(openshot_copy_path)
     print("Loaded modules from openshot_qt directory: %s" % openshot_copy_path)
 
+# Detect artifact folder (if any)
+artifact_path = os.path.join(PATH, "build", "install-x64")
+if not os.path.exists(artifact_path):
+    artifact_path = os.path.join(PATH, "build", "install-x86")
+if not os.path.exists(artifact_path):
+    # Default to user install path
+    artifact_path = ""
+
 # Append possible build server paths
-sys.path.insert(0, os.path.join(PATH, "build", "install-x86", "lib"))
-sys.path.insert(0, os.path.join(PATH, "build", "install-x86", "bin"))
-sys.path.insert(0, os.path.join(PATH, "build", "install-x64", "lib"))
-sys.path.insert(0, os.path.join(PATH, "build", "install-x64", "bin"))
+if artifact_path:
+    sys.path.insert(0, os.path.join(artifact_path, "lib"))
+    sys.path.insert(0, os.path.join(artifact_path, "bin"))
 
 from classes import info
 from classes.logger import log
 log.info("Execution path: %s" % os.path.abspath(__file__))
+log.info("Artifact path detected and added to sys.path: %s" % artifact_path)
 
 # Find files matching patterns
 def find_files(directory, patterns):
@@ -166,6 +174,8 @@ exe_name = info.NAME
 # Copy QT translations to local folder (to be packaged)
 qt_local_path = os.path.join(PATH, "openshot_qt", "language")
 qt_system_path = QLibraryInfo.location(QLibraryInfo.TranslationsPath)
+log.info("Qt local translation files path: %s" % qt_local_path)
+log.info("Qt system translation files path: %s" % qt_system_path)
 if os.path.exists(qt_system_path):
     # Create local QT translation folder (if needed)
     if not os.path.exists(qt_local_path):
@@ -174,12 +184,14 @@ if os.path.exists(qt_system_path):
     for file in os.listdir(qt_system_path):
         # Copy QT translation files
         if (file.startswith("qt_") or file.startswith("qtbase_")) and file.endswith(".qm"):
+            log.info("Qt system translation, copied: %s" % file)
             shutil.copyfile(os.path.join(qt_system_path, file), os.path.join(qt_local_path, file))
 
 # Copy git log files into src/settings files (if found)
 version_info = {}
-for share_name in ["install-x64", "install-x86"]:
-    share_path = os.path.join(PATH, "build", share_name, "share")
+if artifact_path:
+    share_path = os.path.join(artifact_path, "share")
+    log.info("Copy share path to settings: %s" % share_path)
     if os.path.exists(share_path):
         for git_log_filename in os.listdir(share_path):
             git_log_filepath = os.path.join(share_path, git_log_filename)
@@ -219,12 +231,12 @@ if sys.platform == "win32":
         "OpenGL_accelerate",
     ])
 
-    # Manually add zmq dependency (windows does not freeze it correctly)
-    import zmq
-    python_packages.remove('zmq')
-    zmq_path = os.path.normpath(os.path.dirname(inspect.getfile(zmq)))
-    for filename in find_files(zmq_path, ["*"]):
-        src_files.append((filename, os.path.join("lib", "zmq", os.path.relpath(filename, start=zmq_path))))
+    # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
+    # and thus cx_freeze is not able to detect them
+    MSYSTEM = os.getenv('MSYSTEM', "MINGW64").lower()
+    babl_ext_path = "c:/msys64/%s/lib/babl-0.1/" % MSYSTEM
+    for filename in find_files(babl_ext_path, ["*.dll"]):
+        src_files.append((filename, os.path.join("lib", "babl-ext", os.path.relpath(filename, start=babl_ext_path))))
 
     # Append all source files
     src_files.append((os.path.join(PATH, "installer", "qt.conf"), "qt.conf"))
@@ -246,7 +258,7 @@ elif sys.platform == "linux":
             external_so_files.append((filename, os.path.relpath(filename, start=libopenshot_path)))
 
     # Add libresvg (if found)
-    resvg_path = "/usr/local/lib/libresvg.so"
+    resvg_path = "/usr/lib/libresvg.so"
     if os.path.exists(resvg_path):
         external_so_files.append((resvg_path, os.path.basename(resvg_path)))
 
@@ -273,6 +285,12 @@ elif sys.platform == "linux":
     for filename in find_files(nss_path, ["*"]):
         external_so_files.append((filename, os.path.basename(filename)))
 
+    # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
+    # and thus cx_freeze is not able to detect them
+    babl_ext_path = ARCHLIB + "babl-0.1/"
+    for filename in find_files(babl_ext_path, ["*.so"]):
+        src_files.append((filename, os.path.join("lib", "babl-ext", os.path.relpath(filename, start=babl_ext_path))))
+
     # Append Linux ICON file
     iconFile += ".svg"
     src_files.append((os.path.join(PATH, "xdg", iconFile), iconFile))
@@ -287,7 +305,7 @@ elif sys.platform == "linux":
     pyqt5_mod_files = []
     from importlib import import_module
     for submod in ['Qt', 'QtSvg', 'QtWidgets', 'QtCore', 'QtGui', 'QtDBus']:
-        mod_name  = "PyQt5.{}".format(submod)
+        mod_name = "PyQt5.{}".format(submod)
         mod = import_module(mod_name)
         pyqt5_mod_files.append(inspect.getfile(mod))
     # Optional additions
@@ -302,7 +320,6 @@ elif sys.platform == "linux":
             pyqt5_mod_files.append(inspect.getfile(mod))
         except ImportError as ex:
             log.warning("Skipping {}: {}".format(mod_name, ex))
-
 
     lib_list = pyqt5_mod_files
     for lib_name in [
@@ -321,6 +338,7 @@ elif sys.platform == "linux":
 
         # Loop through each line of output (which outputs dependencies - one per line)
         for line in depends:
+            log.info("ldd raw line: %s" % line)
             lineparts = line.split("=>")
             libname = lineparts[0].strip()
 
@@ -338,11 +356,16 @@ elif sys.platform == "linux":
             # And ignore paths that start with /lib
             libpath = libdetailsparts[0].strip()
             libpath_file = os.path.basename(libpath)
+            log.info("libpath: %s, libpath_file: %s" % (libpath, libpath_file))
+
             if (libpath
                 and os.path.exists(libpath)
-                and not libpath.startswith("/lib")
                 and "libnvidia-glcore.so" not in libpath
                 and libpath_file not in [
+                    "libdl.so.2",
+                    "librt.so.1",
+                    "libpthread.so.0",
+                    "libc.so.6",
                     "libstdc++.so.6",
                     "libGL.so.1",
                     "libxcb.so.1",
@@ -353,22 +376,22 @@ elif sys.platform == "linux":
                     "libICE.so.6",
                     "libp11-kit.so.0",
                     "libSM.so.6",
-                    # Next 5 are all part of glib2
-                    "libglib-2.0.so.0",
-                    "libgobject-2.0.so.0",
-                    "libgio-2.0.so.0",
-                    "libgmodule-2.0.so.0",
-                    "libgthread-2.0.so.0",
-
+                    # Next libs are all part of glib2
+                    # Adding these back in, for experimental RHEL 84 support (which has a custom version of glib
+                    # that breaks our AppImages).
+                    #"libglib-2.0.so.0",
+                    #"libgobject-2.0.so.0",
+                    #"libgio-2.0.so.0",
+                    #"libgmodule-2.0.so.0",
+                    #"libgthread-2.0.so.0",
+                    #"libpango-1.0.so.0",
+                    #"libpangocairo-1.0.so.0",
+                    #"libpangoft2-1.0.so.0",
                     "libdrm.so.2",
                     "libfreetype.so.6",
                     "libfontconfig.so.1",
-                    "libcairo.so.2",
-                    "libpango-1.0.so.0",
-                    "libpangocairo-1.0.so.0",
-                    "libpangoft2-1.0.so.0",
                     "libharfbuzz.so.0",
-                    "libthai.so.0",
+                    #"libthai.so.0",
                     ]
                ) or libpath_file in [
                     "libgcrypt.so.11",
@@ -381,8 +404,8 @@ elif sys.platform == "linux":
                     "libselinux.so.1",
                     ]:
                 external_so_files.append((libpath, libpath_file))
-                # Any other lib deps that fail to meet the inclusion
-                # criteria above will be silently skipped over
+            else:
+                log.info("Skipping external library: %s" % libpath)
 
     # Append all source files
     src_files.append((os.path.join(PATH, "installer", "qt.conf"), "qt.conf"))
@@ -411,6 +434,12 @@ elif sys.platform == "darwin":
     external_so_files.append((web_process_path, os.path.basename(web_process_path)))
     external_so_files.append((web_core_path, os.path.basename(web_core_path)))
 
+    # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
+    # and thus cx_freeze is not able to detect them
+    babl_ext_path = "/usr/local/lib/babl-0.1"
+    for filename in find_files(babl_ext_path, ["*.dylib"]):
+        src_files.append((filename, os.path.join("lib", "babl-ext", os.path.relpath(filename, start=babl_ext_path))))
+
     # Add QtWebEngineProcess Resources & Local
     for filename in find_files(os.path.join(qt_webengine_path, "Resources"), ["*"]):
         external_so_files.append((filename, os.path.relpath(filename, start=os.path.join(qt_webengine_path, "Resources"))))
@@ -438,13 +467,14 @@ build_exe_options["packages"] = python_packages
 build_exe_options["include_files"] = src_files + external_so_files
 build_exe_options["includes"] = python_modules
 build_exe_options["excludes"] = ["distutils",
-                                 "sentry_sdk.integrations.django",
                                  "numpy",
                                  "setuptools",
                                  "tkinter",
                                  "pydoc_data",
                                  "pycparser",
                                  "pkg_resources"]
+if sys.platform == "darwin":
+    build_exe_options["excludes"].append("sentry_sdk.integrations.django")
 
 # Set options
 build_options["build_exe"] = build_exe_options
@@ -455,14 +485,16 @@ exes = [Executable("openshot_qt/launch.py",
                    icon=os.path.join(PATH, "xdg", iconFile),
                    shortcutName="%s" % info.PRODUCT_NAME,
                    shortcutDir="ProgramMenuFolder",
-                   targetName=exe_name)]
+                   targetName=exe_name,
+                   copyright=info.COPYRIGHT)]
 
 try:
     # Include extra launcher configuration, if defined
     exes.append(Executable("openshot_qt/launch.py",
                 base=extra_exe['base'],
                 icon=os.path.join(PATH, "xdg", iconFile),
-                targetName=extra_exe['name']))
+                targetName=extra_exe['name'],
+                copyright=info.COPYRIGHT))
 except NameError:
     pass
 
@@ -480,11 +512,11 @@ if os.path.exists(os.path.join(PATH, "src")):
     rmtree(openshot_copy_path, True)
 
 # Fix a few things on the frozen folder(s)
+build_path = os.path.join(PATH, "build")
 if sys.platform == "darwin":
     # Mac issues with frozen folder and *.app folder
     # We need to rewrite many dependency paths and library IDs
     from installer.fix_qt5_rpath import *
-    build_path = os.path.join(PATH, "build")
     for frozen_path in os.listdir(build_path):
             if frozen_path.startswith("exe"):
                 fix_rpath(os.path.join(build_path, frozen_path))
@@ -495,7 +527,6 @@ if sys.platform == "darwin":
 elif sys.platform == "linux":
     # Linux issues with frozen folder
     # We need to remove some excess folders/files that are unneeded bloat
-    build_path = os.path.join(PATH, "build")
     for frozen_path in os.listdir(build_path):
             if frozen_path.startswith("exe"):
                 paths = ["lib/openshot_qt/",
@@ -513,3 +544,19 @@ elif sys.platform == "linux":
                         elif os.path.isdir(remove_path):
                             log.info("Removing unneeded folder: %s" % remove_path)
                             rmtree(remove_path)
+
+# We need to remove some excess folders/files that are unneeded bloat
+# All 3 OSes
+for frozen_path in os.listdir(build_path):
+        if frozen_path.startswith("exe"):
+            paths = ["lib/babl-ext/libbabl-0.1-0.*",
+                     "lib/babl-ext/libgcc_s_seh-1.*",
+                     "lib/babl-ext/liblcms2-2.*",
+                     "lib/babl-ext/libwinpthread-1.*",
+                     "lib/babl-ext/msvcrt.*"]
+            for path in paths:
+                full_path = os.path.join(build_path, frozen_path, path)
+                for remove_path in glob.glob(full_path):
+                    if os.path.isfile(remove_path):
+                        log.info("Removing unneeded file: %s" % remove_path)
+                        os.unlink(remove_path)

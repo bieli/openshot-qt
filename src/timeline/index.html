@@ -83,7 +83,7 @@
 				</div>
 				
 				<!-- CLIPS -->
-				<div ng-hide tl-clip ng-repeat="clip in project.clips" id="clip_{{clip.id}}" ng-click="selectClip(clip.id, true, $event)" ng-right-click="showClipMenu(clip.id, $event)" class="clip droppable" ng-class="getClipStyle(clip)" style="width:{{(clip.end - clip.start) * pixelsPerSecond}}px; left:{{clip.position * pixelsPerSecond}}px; top:{{getTrackTop(clip.layer)}}px;z-index:{{1000 + $index}};">
+				<div ng-hide tl-clip ng-repeat="clip in project.clips" id="clip_{{clip.id}}" ng-click="selectClip(clip.id, true, $event)" ng-right-click="showClipMenu(clip.id, $event)" class="clip droppable" ng-class="getClipStyle(clip)" style="width:{{(clip.end - clip.start) * pixelsPerSecond}}px; left:{{clip.position * pixelsPerSecond}}px; top:{{getTrackTop(clip.layer)}}px;z-index:{{getZindex(clip, 1000, $index)}};">
 					<div class="clip_top">
 						<div tl-clip-menu class="menu clip_menu" ng-if="!enable_razor" ng-mousedown="showClipMenu(clip.id, $event)" tooltip-enable="!enable_razor" tooltip="{{clip.title}}" tooltip-placement="bottom" tooltip-popup-delay="400"></div>
 
@@ -100,11 +100,11 @@
 					</div>
 					<br class="cleared">
 
-					<div ng-if="!clip.show_audio" class="thumb-container">
+					<div ng-if="!clip.ui.audio_data || (clip.ui.audio_data && clip.ui.audio_data.length <= 1)" class="thumb-container">
 						<img class="thumb thumb-start" ng-if="getThumbPath(clip)" ng-src="{{ getThumbPath(clip) }}"/>
 					</div>
-					<div ng-if="clip.show_audio" class="audio-container">
-						<canvas tl-audio height="46px" width="{{canvasMaxWidth((clip.end - clip.start) * pixelsPerSecond)}}px" class="audio"></canvas>
+					<div ng-if="clip.ui.audio_data && clip.ui.audio_data.length > 1" class="audio-container">
+						<canvas id="audio_clip_{{clip.id}}" tl-audio height="46px" width="{{canvasMaxWidth((clip.end - clip.start) * pixelsPerSecond)}}px" class="audio"></canvas>
 					</div>
 
                     <!-- CLIP KEYFRAME POINTS -->
@@ -118,7 +118,7 @@
 				</div>
 
 				<!-- TRANSITIONS -->
-				<div ng-hide tl-transition ng-repeat="transition in project.effects" id="transition_{{transition.id}}" ng-click="selectTransition(transition.id, true, $event)" ng-right-click="showTransitionMenu(transition.id, $event)" class="transition droppable" ng-class="getClipStyle(transition)" style="width:{{ (transition.end - transition.start) * pixelsPerSecond}}px; left:{{transition.position * pixelsPerSecond}}px; top:{{getTrackTop(transition.layer)}}px;z-index:{{5000 + $index}};">
+				<div ng-hide tl-transition ng-repeat="transition in project.effects" id="transition_{{transition.id}}" ng-click="selectTransition(transition.id, true, $event)" ng-right-click="showTransitionMenu(transition.id, $event)" class="transition droppable" ng-class="getClipStyle(transition)" style="width:{{ (transition.end - transition.start) * pixelsPerSecond}}px; left:{{transition.position * pixelsPerSecond}}px; top:{{getTrackTop(transition.layer)}}px;z-index:{{getZindex(transition, 5000, $index)}};">
 					<div class="transition_top">
 						<div tl-clip-menu class="transition_menu" ng-if="!enable_razor" ng-mousedown="showTransitionMenu(transition.id, $event)"></div>
 

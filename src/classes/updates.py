@@ -28,8 +28,9 @@
  """
 
 from classes.logger import log
-import copy
+from classes.app import get_app
 import json
+import uuid
 
 
 class UpdateWatcher:
@@ -55,12 +56,23 @@ class UpdateAction:
     """A data structure representing a single update manager action,
     including any necessary data to reverse the action."""
 
-    def __init__(self, type=None, key=[], values=None, partial_update=False):
+    def __init__(self, type=None, key=None, values=None, old_values=None, transaction=None):
         self.type = type  # insert, update, or delete
-        self.key = key  # list which contains the path to the item, for example: ["clips",{"id":"123"}]
+        self.key = key or []  # list which contains the path to the item, for example: ["clips",{"id":"123"}]
         self.values = values
-        self.old_values = None
-        self.partial_update = partial_update
+        self.old_values = old_values
+        self.transaction = transaction
+
+        # Set transaction id - used with undo/redo to group
+        # a set of related UpdateAction objects
+        if not transaction:
+            # Auto set transaction id to GUID
+            self.transaction = str(uuid.uuid4())
+
+    def copy(self):
+        """Create and return a copy of UpdateAction - with no references to the original"""
+        # Serialize as JSON string, then load JSON string and cast back into UpdateAction
+        return UpdateAction(**json.loads(json.dumps(self, default=lambda o: o.__dict__)))
 
     def set_old_values(self, old_vals):
         self.old_values = old_vals
@@ -70,13 +82,13 @@ class UpdateAction:
 
         # Build the dictionary to be serialized
         if only_value:
-            data_dict = copy.deepcopy(self.values)
+            data_dict = json.loads(json.dumps(self.values))
         else:
             data_dict = {"type": self.type,
                          "key": self.key,
-                         "value": copy.deepcopy(self.values),
-                         "partial": self.partial_update,
-                         "old_values": copy.deepcopy(self.old_values)}
+                         "value": json.loads(json.dumps(self.values)),
+                         "old_values": json.loads(json.dumps(self.old_values)),
+                         "transaction": self.transaction}
 
             # Always remove 'history' key (if found). This prevents nested "history"
             # attributes when a project dict is loaded.
@@ -109,7 +121,6 @@ class UpdateAction:
         self.key = update_action_dict.get("key")
         self.values = update_action_dict.get("value")
         self.old_values = update_action_dict.get("old_values")
-        self.partial_update = update_action_dict.get("partial")
 
         # Always remove 'history' key (if found). This prevents nested "history"
         # attributes when a project dict is loaded.
@@ -136,6 +147,7 @@ class UpdateManager:
         self.ignore_history = False  # Ignore saving actions to history, to prevent a huge undo/redo list
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
+        self.transaction_id = None  # The current transaction id to be attached to any UpdateActions created
 
     def load_history(self, project):
         """Load history from project"""
@@ -202,6 +214,12 @@ class UpdateManager:
         # Notify watchers of new history state
         self.update_watchers()
 
+    def disconnect_listener(self, listener):
+        """Remove a listener from the update manager"""
+        if listener in self.updateListeners:
+            log.info("Remove listener from UpdateManager: %s" % str(listener))
+            self.updateListeners.remove(listener)
+
     def add_listener(self, listener, index=-1):
         """ Add a new listener (which will invoke the changed(action) method
         each time an UpdateAction is available). """
@@ -240,7 +258,7 @@ class UpdateManager:
     # caused by actions.
     def get_reverse_action(self, action):
         """ Convert an UpdateAction into the opposite type (i.e. 'insert' becomes an 'delete') """
-        reverse = UpdateAction(action.type, action.key, action.values, action.partial_update)
+        reverse = UpdateAction(action.type, action.key, action.values)
         # On adds, setup remove
         if action.type == "insert":
             reverse.type = "delete"
@@ -258,30 +276,59 @@ class UpdateManager:
 
         # On updates, just swap the old and new values data
         # Swap old and new values
-        reverse.old_values = action.values
-        reverse.values = action.old_values
+        reverse.old_values = json.loads(json.dumps(action.values))
+        reverse.values = json.loads(json.dumps(action.old_values))
 
         return reverse
 
     def undo(self):
-        """ Undo the last UpdateAction (and notify all listeners and watchers) """
+        """ Undo the last UpdateAction (and notify all listeners and watchers).
+            Continue until all identical transaction ids have been found. """
+        last_transaction = None
+        for last_action in reversed(self.actionHistory):
+            # Compare transaction ids
+            if last_transaction and last_transaction != last_action.transaction:
+                # Different transaction, skip
+                continue
+            else:
+                last_transaction = last_action.transaction or str(uuid.uuid4())
+                self.actionHistory.remove(last_action)
 
-        if len(self.actionHistory) > 0:
-            # Get last action from history (remove)
-            last_action = copy.deepcopy(self.actionHistory.pop())
+            # Copy action
+            last_action = last_action.copy()
 
+            # Add action to redo list
             self.redoHistory.append(last_action)
             self.pending_action = None
             # Get reverse of last action and perform it
-            reverse_action = self.get_reverse_action(last_action)
-            self.dispatch_action(reverse_action)
+            reverse = self.get_reverse_action(last_action)
+
+            # Remove selections for deleted items (if any)
+            if reverse.type == "delete" and len(reverse.key) == 2 and reverse.key[0] == "clips":
+                # unselect deleted clip
+                get_app().window.clearSelections()
+            elif reverse.type == "delete" and len(reverse.key) == 2 and reverse.key[0] == "effects":
+                # unselect deleted effect
+                get_app().window.clearSelections()
+
+            # Perform next undo action
+            self.dispatch_action(reverse)
 
     def redo(self):
-        """ Redo the last UpdateAction (and notify all listeners and watchers) """
+        """ Redo the last UpdateAction (and notify all listeners and watchers).
+            Continue until all identical transaction ids have been found. """
+        last_transaction = None
+        for next_action in reversed(self.redoHistory):
+            # Compare transaction ids
+            if last_transaction and last_transaction != next_action.transaction:
+                # Different transaction, skip
+                continue
+            else:
+                last_transaction = next_action.transaction or str(uuid.uuid4())
+                self.redoHistory.remove(next_action)
 
-        if len(self.redoHistory) > 0:
-            # Get last undone action off redo history (remove)
-            next_action = copy.deepcopy(self.redoHistory.pop())
+            # Copy action
+            next_action = next_action.copy()
 
             # Remove ID from insert (if found)
             if next_action.type == "insert" and isinstance(next_action.key[-1], dict) and "id" in next_action.key[-1]:
@@ -307,13 +354,14 @@ class UpdateManager:
         self.update_watchers()
 
     # Perform load action (loading all project data), clearing history for taking a new path
-    def load(self, values):
+    def load(self, values, reset_history=True):
         """ Load all project data via an UpdateAction into the UpdateManager
         (this action will then be distributed to all listeners) """
 
         self.last_action = UpdateAction('load', '', values)
-        self.redoHistory.clear()
-        self.actionHistory.clear()
+        if reset_history:
+            self.redoHistory.clear()
+            self.actionHistory.clear()
         self.pending_action = None
         self.dispatch_action(self.last_action)
 
@@ -322,7 +370,7 @@ class UpdateManager:
         """ Insert a new UpdateAction into the UpdateManager
         (this action will then be distributed to all listeners) """
 
-        self.last_action = UpdateAction('insert', key, values)
+        self.last_action = UpdateAction('insert', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action
         else:
@@ -331,11 +379,11 @@ class UpdateManager:
             self.actionHistory.append(self.last_action)
         self.dispatch_action(self.last_action)
 
-    def update(self, key, values, partial_update=False):
+    def update(self, key, values):
         """ Update the UpdateManager with an UpdateAction
         (this action will then be distributed to all listeners) """
 
-        self.last_action = UpdateAction('update', key, values, partial_update)
+        self.last_action = UpdateAction('update', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action
         else:
@@ -346,14 +394,14 @@ class UpdateManager:
             self.actionHistory.append(self.last_action)
         self.dispatch_action(self.last_action)
 
-    def update_untracked(self, key, values, partial_update=False):
+    def update_untracked(self, key, values):
         """ Update the UpdateManager with an UpdateAction, without creating
         a new entry in the history table
         (this action will then be distributed to all listeners) """
         previous_ignore = self.ignore_history
         previous_pending = self.pending_action
         self.ignore_history = True
-        self.update(key, values, partial_update)
+        self.update(key, values)
         self.ignore_history = previous_ignore
         self.pending_action = previous_pending
 
@@ -361,7 +409,7 @@ class UpdateManager:
         """ Delete an item from the UpdateManager with an UpdateAction
         (this action will then be distributed to all listeners) """
 
-        self.last_action = UpdateAction('delete', key)
+        self.last_action = UpdateAction('delete', key, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action
         else:

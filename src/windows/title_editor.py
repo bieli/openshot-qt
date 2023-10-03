@@ -29,18 +29,20 @@
 import os
 import re
 import shutil
+import sys
 import functools
 import subprocess
 import tempfile
+import threading
 
 # TODO: Is there a defusedxml substitute for getDOMImplementation?
 # Is one even necessary, or is it safe to use xml.dom.minidom for that?
 from xml.dom import minidom
 
-from PyQt5.QtCore import Qt, pyqtSlot, QTimer
+from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal
 from PyQt5 import QtGui
 from PyQt5.QtWidgets import (
-    QWidget, QGraphicsScene,
+    QWidget,
     QMessageBox, QDialog, QColorDialog, QFontDialog,
     QPushButton, QLineEdit, QLabel
 )
@@ -62,19 +64,23 @@ class TitleEditor(QDialog):
 
     # Path to ui file
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'title-editor.ui')
+    thumbnailReady = pyqtSignal(object)
 
     def __init__(self, *args, edit_file_path=None, duplicate=False, **kwargs):
 
         # Create dialog class
         super().__init__(*args, **kwargs)
 
+        # A timer to pause until user input stops before updating the svg
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(50)
+        self.update_timer.setSingleShot(True)
+        self.update_timer.timeout.connect(self.save_and_reload)
+
         self.app = get_app()
         self.project = self.app.project
         self.edit_file_path = edit_file_path
         self.duplicate = duplicate
-
-        # Get translation object
-        _ = self.app._tr
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -85,7 +91,15 @@ class TitleEditor(QDialog):
         # Track metrics
         track_metric_screen("title-screen")
 
+        # Get environment variables needed for launching a process without trying to load libraries
+        # from our frozen app bundle
+        self.env = dict(os.environ)
+        if sys.platform == "linux":
+            self.env.pop('LD_LIBRARY_PATH', None)
+            log.debug('Removing custom LD_LIBRARY_PATH from environment variables when launching Inkscape')
+
         # Initialize variables
+        self.is_thread_busy = False
         self.template_name = ""
         imp = minidom.getDOMImplementation()
         self.xmldoc = imp.createDocument(None, "any", None)
@@ -99,7 +113,7 @@ class TitleEditor(QDialog):
 
         self.font_weight = 'normal'
         self.font_style = 'normal'
-        self.font_size_pixel = 20
+        self.font_size_ratio = 1
 
         self.new_title_text = ""
         self.sub_title_text = ""
@@ -118,6 +132,9 @@ class TitleEditor(QDialog):
         # Disable Save button on window load
         self.buttonBox.button(self.buttonBox.Save).setEnabled(False)
 
+        # Connect thumbnail listener
+        self.thumbnailReady.connect(self.display_pixmap)
+
         # If editing existing title svg file
         if self.edit_file_path:
             # Hide list of templates
@@ -131,6 +148,10 @@ class TitleEditor(QDialog):
 
             # Display image (slight delay to allow screen to be shown first)
             QTimer.singleShot(50, self.display_svg)
+
+    def display_pixmap(self, display_pixmap):
+        """Display pixmap of SVG on UI thread"""
+        self.lblPreviewLabel.setPixmap(display_pixmap)
 
     def txtLine_changed(self, txtWidget):
 
@@ -150,7 +171,7 @@ class TitleEditor(QDialog):
                 node.appendChild(new_text_node)
 
         # Something changed, so update temp SVG
-        self.save_and_reload()
+        self.update_timer.start()
 
     def display_svg(self):
         # Create a temp file for this thumbnail image
@@ -183,7 +204,7 @@ class TitleEditor(QDialog):
         display_pixmap = QtGui.QIcon(tmp_filename).pixmap(self.lblPreviewLabel.size())
 
         # Display temp image
-        self.lblPreviewLabel.setPixmap(display_pixmap)
+        self.thumbnailReady.emit(display_pixmap)
 
         # Remove temporary file
         os.unlink(tmp_filename)
@@ -286,11 +307,11 @@ class TitleEditor(QDialog):
             title_text.append(text)
 
             # Set font size (for possible font dialog)
-            s = node.attributes["style"].value
+            s = node.getAttribute("style")
             ard = style_to_dict(s)
-            fs = ard.get("font_size")
+            fs = ard.get("font-size")
             if fs and fs.endswith("px"):
-                self.qfont.setPixelSize(float(fs[:-2]))
+                self.qfont.setPixelSize(int(float(fs[:-2])))
             elif fs and fs.endswith("pt"):
                 self.qfont.setPointSizeF(float(fs[:-2]))
 
@@ -364,8 +385,19 @@ class TitleEditor(QDialog):
 
     def save_and_reload(self):
         """Something changed, so update temp SVG and redisplay"""
+        if not self.is_thread_busy:
+            t = threading.Thread(target=self.save_and_reload_thread, daemon=True)
+            t.start()
+        else:
+            # Keep retrying until we succeed
+            self.update_timer.start()
+
+    def save_and_reload_thread(self):
+        """Run inside thread, to update and display new SVG - so we don't block the main UI thread"""
+        self.is_thread_busy = True
         self.writeToFile(self.xmldoc)
         self.display_svg()
+        self.is_thread_busy = False
 
     @pyqtSlot(QtGui.QColor)
     def color_callback(self, save_fn, refresh_fn, color):
@@ -374,7 +406,7 @@ class TitleEditor(QDialog):
             return
         save_fn(color.name(), color.alphaF())
         refresh_fn()
-        self.save_and_reload()
+        self.update_timer.start()
 
     @staticmethod
     def best_contrast(bg: QtGui.QColor) -> QtGui.QColor:
@@ -432,12 +464,14 @@ class TitleEditor(QDialog):
         if ok and font is not oldfont:
             self.qfont = font
             fontinfo = QtGui.QFontInfo(font)
+            oldfontinfo = QtGui.QFontInfo(oldfont)
             self.font_family = fontinfo.family()
             self.font_style = fontinfo.styleName()
             self.font_weight = fontinfo.weight()
-            self.font_size_pixel = fontinfo.pixelSize()
+            if (oldfontinfo.pixelSize() > 0):
+                self.font_size_ratio = fontinfo.pixelSize() / oldfontinfo.pixelSize()
             self.set_font_style()
-            self.save_and_reload()
+            self.update_timer.start()
 
     def update_font_color_button(self):
         """Updates the color shown on the font color button"""
@@ -446,7 +480,7 @@ class TitleEditor(QDialog):
         for node in self.text_nodes + self.tspan_nodes:
 
             # Get the value in the style attribute and turn into a dict
-            s = node.attributes["style"].value
+            s = node.getAttribute("style")
             ard = style_to_dict(s)
             # Get fill color or default to white
             color = ard.get("fill", "#FFF")
@@ -490,7 +524,7 @@ class TitleEditor(QDialog):
                         for stop_node in ref_node.childNodes:
                             if stop_node.nodeName == "stop":
                                 # get color from stop
-                                ard = style_to_dict(stop_node.attributes["style"].value)
+                                ard = style_to_dict(stop_node.getAttribute("style"))
                                 if "stop-color" in ard:
                                     return ard.get("stop-color")
         return ""
@@ -500,7 +534,7 @@ class TitleEditor(QDialog):
 
         if self.rect_node:
             # All backgrounds should be the first (index 0) rect tag in the svg
-            s = self.rect_node[0].attributes["style"].value
+            s = self.rect_node[0].getAttribute("style")
             ard = style_to_dict(s)
 
             # Get fill color or default to black + full opacity
@@ -525,11 +559,14 @@ class TitleEditor(QDialog):
         # Loop through each TEXT element
         for text_child in self.text_nodes + self.tspan_nodes:
             # set the style elements for the main text node
-            s = text_child.attributes["style"].value
+            s = text_child.getAttribute("style")
             ard = style_to_dict(s)
             set_if_existing(ard, "font-style", self.font_style)
             set_if_existing(ard, "font-family", f"'{self.font_family}'")
-            set_if_existing(ard, "font-size", f"{self.font_size_pixel}px")
+            new_font_size_pixel = 0
+            if 'font-size' in ard:
+                new_font_size_pixel = self.font_size_ratio * float(ard['font-size'][:-2])
+            set_if_existing(ard, "font-size", f"{new_font_size_pixel}px")
             self.title_style_string = dict_to_style(ard)
 
             # set the text node
@@ -541,7 +578,7 @@ class TitleEditor(QDialog):
 
         if self.rect_node:
             # Turn the style attribute into a dict for modification
-            s = self.rect_node[0].attributes["style"].value
+            s = self.rect_node[0].getAttribute("style")
             ard = style_to_dict(s)
             ard.update({
                 "fill": color,
@@ -556,7 +593,7 @@ class TitleEditor(QDialog):
         # Loop through each TEXT element
         for text_child in self.text_nodes + self.tspan_nodes:
             # SET TEXT PROPERTIES
-            s = text_child.attributes["style"].value
+            s = text_child.getAttribute("style")
             ard = style_to_dict(s)
             ard.update({
                 "fill": color,
@@ -601,7 +638,7 @@ class TitleEditor(QDialog):
                 self.writeToFile(self.xmldoc)
 
                 # Add file to project
-                app.window.files_model.add_files(self.filename)
+                app.window.files_model.add_files(self.filename, prevent_image_seq=True, prevent_recent_folder=True)
 
         # Close window
         super().accept()
@@ -616,7 +653,7 @@ class TitleEditor(QDialog):
         try:
             # launch advanced title editor
             log.info("Advanced title editor command: %s", str([prog, self.filename]))
-            p = subprocess.Popen([prog, self.filename])
+            p = subprocess.Popen([prog, self.filename], env=self.env)
             # wait for process to finish, then update preview
             p.communicate()
             self.load_svg_template(filename_field=filename_text)

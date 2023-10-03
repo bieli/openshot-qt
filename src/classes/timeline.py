@@ -50,8 +50,8 @@ class TimelineSync(UpdateInterface):
         channel_layout = project.get("channel_layout")
 
         # Create an instance of a libopenshot Timeline object
-        self.timeline = openshot.Timeline(width, height, openshot.Fraction(fps["num"], fps["den"]), sample_rate, channels,
-                                          channel_layout)
+        self.timeline = openshot.Timeline(width, height, openshot.Fraction(fps["num"], fps["den"]),
+                                          sample_rate, channels, channel_layout)
         self.timeline.info.channel_layout = channel_layout
         self.timeline.info.has_audio = True
         self.timeline.info.has_video = True
@@ -74,18 +74,32 @@ class TimelineSync(UpdateInterface):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
 
         # Ignore changes that don't affect libopenshot
-        if len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers", "layers", "export_path", "import_path", "scale", "profile"]:
+        if len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "markers",
+                                                              "layers", "scale", "profile"]:
             return
 
-        # Pass the change to the libopenshot timeline
+        # Disable video caching temporarily
+        caching_value = openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+
         try:
             if action.type == "load":
+                # Clear any selections in UI (since we are clearing the timeline)
+                self.window.clearSelections()
+
+                # Clear any existing clips & effects (free memory)
+                self.timeline.Close()
+                self.timeline.Clear()
+
                 # This JSON is initially loaded to libopenshot to update the timeline
                 self.timeline.SetJson(action.json(only_value=True))
                 self.timeline.Open()  # Re-Open the Timeline reader
 
                 # The timeline's profile changed, so update all clips
                 self.timeline.ApplyMapperToClips()
+
+                # Always seek back to frame 1
+                self.window.SeekSignal.emit(1)
 
                 # Refresh current frame (since the entire timeline was updated)
                 self.window.refreshFrameSignal.emit()
@@ -95,7 +109,11 @@ class TimelineSync(UpdateInterface):
                 self.timeline.ApplyJsonDiff(action.json(is_array=True))
 
         except Exception as e:
-            log.info("Error applying JSON to timeline object in libopenshot: %s. %s" % (e, action.json(is_array=True)))
+            log.info("Error applying JSON to timeline object in libopenshot: %s. %s" %
+                     (e, action.json(is_array=True)))
+
+        # Resume video caching original value
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = caching_value
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
@@ -103,14 +121,16 @@ class TimelineSync(UpdateInterface):
             log.info('Waiting for main window to initialize before calling SetMaxSize')
             time.sleep(0.5)
 
+        # Increase based on DPI
+        new_size *= self.window.devicePixelRatioF()
+
         log.info("Adjusting max size of preview image: %s" % new_size)
 
-        # Clear timeline preview cache (since our video size has changed)
-        self.timeline.ClearAllCache()
-
         # Set new max video size (Based on preview widget size and display scaling)
-        scale = self.window.devicePixelRatioF()
-        self.timeline.SetMaxSize(round(new_size.width() * scale), round(new_size.height() * scale))
+        self.timeline.SetMaxSize(new_size.width(), new_size.height())
+
+        # Clear timeline preview cache (since our video size has changed)
+        self.timeline.ClearAllCache(True)
 
         # Refresh current frame (since the entire timeline was updated)
         self.window.refreshFrameSignal.emit()

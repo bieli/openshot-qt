@@ -28,15 +28,16 @@
 import os
 from time import strftime
 
-VERSION = "2.6.1-dev"
-MINIMUM_LIBOPENSHOT_VERSION = "0.2.7"
-DATE = "20210904000000"
+VERSION = "3.1.1"
+MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
+DATE = "20230417000000"
 NAME = "openshot-qt"
 PRODUCT_NAME = "OpenShot Video Editor"
 GPL_VERSION = "3"
-DESCRIPTION = "Create and edit stunning videos, movies, and animations"
+DESCRIPTION = "Create and edit stunning videos, films, and animations with an " \
+              "easy-to-use interface and rich set of features."
 COMPANY_NAME = "OpenShot Studios, LLC"
-COPYRIGHT = "Copyright (c) 2008-{} {}".format(strftime("%Y"), COMPANY_NAME)
+COPYRIGHT = "(c) 2008-{} {}".format(strftime("%Y"), COMPANY_NAME)
 CWD = os.getcwd()
 
 # Application paths
@@ -109,15 +110,19 @@ LOG_LEVEL_CONSOLE = 'INFO'
 # Web backend selection, overridable at launch
 WEB_BACKEND = 'auto'
 
-# Sentry.io error reporting rate (0.0 TO 1.0)
+# Sentry.io error & transaction reporting rate (0.0 TO 1.0)
 # 0.0 = no error reporting to Sentry
 # 0.5 = 1/2 of errors reported to Sentry
 # 1.0 = all errors reporting to Sentry
+#    ERROR: Exceptions sent to Sentry
+#    TRANS: Transactions sent to Sentry
 #    STABLE: If this version matches the current version (reported on openshot.org)
 #    UNSTABLE: If this version does not match the current version (reported on openshot.org)
 #    STABLE_VERSION: This is the current stable release reported by openshot.org
 ERROR_REPORT_RATE_STABLE = 0.0
 ERROR_REPORT_RATE_UNSTABLE = 0.0
+TRANS_REPORT_RATE_STABLE = 0.0
+TRANS_REPORT_RATE_UNSTABLE = 0.0
 ERROR_REPORT_STABLE_VERSION = None
 
 # Languages

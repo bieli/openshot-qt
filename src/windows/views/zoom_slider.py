@@ -150,7 +150,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
             # Get FPS info
             fps_num = get_app().project.get("fps").get("num", 24)
-            fps_den = get_app().project.get("fps").get("den", 1)
+            fps_den = get_app().project.get("fps").get("den", 1) or 1
             fps_float = float(fps_num / fps_den)
 
             # Determine scale factor
@@ -524,6 +524,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Connect zoom functionality
         self.win.TimelineScrolled.connect(self.update_scrollbars)
 
+        self.win.TimelineResize.connect(self.delayed_resize_callback)
+
         # Connect Selection signals
         self.win.SelectionChanged.connect(self.handle_selection)
 
@@ -531,6 +533,6 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Timer to use a delay before sending MaxSizeChanged signals (so we don't spam libopenshot)
         self.delayed_size = None
         self.delayed_resize_timer = QTimer(self)
-        self.delayed_resize_timer.setInterval(200)
+        self.delayed_resize_timer.setInterval(100)
         self.delayed_resize_timer.setSingleShot(True)
         self.delayed_resize_timer.timeout.connect(self.delayed_resize_callback)

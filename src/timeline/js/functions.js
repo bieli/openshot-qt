@@ -28,6 +28,13 @@
 
 /*global bounding_box, global_primes*/
 
+// Generate a UUID
+function uuidv4() {
+  return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+}
+
 // Find a JSON element / object with a particular value in the json data
 function findElement(arr, propName, propValue) {
   // Loop through array looking for a matching element
@@ -58,7 +65,7 @@ function drawAudio(scope, clip_id) {
   //get the clip in the scope
   var clip = findElement(scope.project.clips, "id", clip_id);
 
-  if (clip.show_audio) {
+  if (clip.ui && clip.ui.audio_data) {
     var element = $("#clip_" + clip_id);
 
     // Determine start and stop samples
@@ -71,10 +78,13 @@ function drawAudio(scope, clip_id) {
     var sample_divisor = samples_per_second / scope.pixelsPerSecond;
 
     //show audio container
-    element.find(".audio-container").show();
+    element.find(".audio-container").fadeIn(100);
 
     // Get audio canvas context
     var audio_canvas = element.find(".audio");
+    if (!audio_canvas.length) {
+      return;
+    }
     var ctx = audio_canvas[0].getContext("2d", {alpha: false});
 
     // Clear canvas
@@ -119,7 +129,7 @@ function drawAudio(scope, clip_id) {
     // And whenever enough are "collected", draw a block
     for (var i = start_sample; i < final_sample; i++) {
       // Flip negative values up
-      sample = Math.abs(clip.audio_data[i]);
+      sample = Math.abs(clip.ui.audio_data[i]);
       // X-Position of *next* sample
       var x = Math.floor((i + 1 - start_sample) / sample_divisor);
 
@@ -229,12 +239,32 @@ function setBoundingBox(scope, item, item_type="clip") {
   let item_top = 0;
   let item_left = 0;
   let item_right = 0;
+  let item_width = 1;
 
   if (item && item.position()) {
+    // Look up item by ID in scope
+    let item_id = item.attr("id").replace("clip_", "").replace("transition_", "");
+    let item_object = null;
+    if (item.hasClass("clip")) {
+      item_object = findElement(scope.project.clips, "id", item_id);
+    }
+    else if (item.hasClass("transition")) {
+      item_object = findElement(scope.project.effects, "id", item_id);
+    }
+
+    // Compute width from `time` duration (for more accuracy). Getting the width from
+    // JQuery is not accurate, and is occasionally rounded.
+    let item_width = 1;
+    if (item_object) {
+        item_width = (item_object.end - item_object.start) * scope.pixelsPerSecond;
+    } else {
+        item_width = item.width();
+    }
+
     item_bottom = item.position().top + item.height() + vert_scroll_offset;
     item_top = item.position().top + vert_scroll_offset;
     item_left = item.position().left + horz_scroll_offset;
-    item_right = item.position().left + horz_scroll_offset + item.width();
+    item_right = item.position().left + horz_scroll_offset + item_width;
   } else {
     // Protect against invalid item (sentry)
     // TODO: Determine what causes an invalid item to be passed into this function
@@ -247,7 +277,7 @@ function setBoundingBox(scope, item, item_type="clip") {
     bounding_box.bottom = item_bottom;
     bounding_box.right = item_right;
     bounding_box.height = item.height();
-    bounding_box.width = item.width();
+    bounding_box.width = item_width;
   } else {
     //compare and change if item is a better fit for bounding box edges
     if (item_top < bounding_box.top) { bounding_box.top = item_top; }
@@ -318,29 +348,6 @@ function moveBoundingBox(scope, previous_x, previous_y, x_offset, y_offset, left
   bounding_box.top += y_offset;
   bounding_box.bottom += y_offset;
 
-  // Check overall timeline constraints (i.e don't let clips be dragged outside the timeline)
-  if (bounding_box.left < 0) {
-    // Left border
-    x_offset -= bounding_box.left;
-    bounding_box.left = 0;
-    bounding_box.right = bounding_box.width;
-    snapping_result.left = previous_x + x_offset;
-  }
-  if (bounding_box.top < 0) {
-    // Top border
-    y_offset -= bounding_box.top;
-    bounding_box.top = 0;
-    bounding_box.bottom = bounding_box.height;
-    snapping_result.top = previous_y + y_offset;
-  }
-  if (bounding_box.bottom > scrolling_tracks.height) {
-    // Bottom border
-    y_offset -= (bounding_box.bottom - scrolling_tracks.height);
-    bounding_box.bottom = scrolling_tracks.height;
-    bounding_box.top = bounding_box.bottom - bounding_box.height;
-    snapping_result.top = previous_y + y_offset;
-  }
-
   // Find closest nearby object, if any (for snapping)
   var results = scope.getNearbyPosition([bounding_box.left, bounding_box.right],
     10.0, bounding_box.selected_ids);
@@ -364,6 +371,29 @@ function moveBoundingBox(scope, previous_x, previous_y, x_offset, y_offset, left
   } else {
     // Hide snapline
     scope.hideSnapline();
+  }
+
+  // Check overall timeline constraints (i.e don't let clips be dragged outside the timeline)
+  if (bounding_box.left < 0) {
+    // Left border
+    x_offset -= bounding_box.left;
+    bounding_box.left = 0;
+    bounding_box.right = bounding_box.width;
+    snapping_result.left = previous_x + x_offset;
+  }
+  if (bounding_box.top < 0) {
+    // Top border
+    y_offset -= bounding_box.top;
+    bounding_box.top = 0;
+    bounding_box.bottom = bounding_box.height;
+    snapping_result.top = previous_y + y_offset;
+  }
+  if (bounding_box.bottom > scrolling_tracks.height) {
+    // Bottom border
+    y_offset -= (bounding_box.bottom - scrolling_tracks.height);
+    bounding_box.bottom = scrolling_tracks.height;
+    bounding_box.top = bounding_box.bottom - bounding_box.height;
+    snapping_result.top = previous_y + y_offset;
   }
 
   return {"position": snapping_result, "x_offset": x_offset, "y_offset": y_offset};

@@ -144,14 +144,20 @@ class clipExportWindow(QDialog):
         self._createWidgets()
 
     def _getDestination(self):
+        settings = get_app().get_settings()
         fd = QFileDialog()
         fd.setOption(QFileDialog.ShowDirsOnly)
         fd.setDirectory(
-            get_app().project.current_filepath\
-            if get_app().project.current_filepath\
-            else info.HOME_PATH
+            settings.getDefaultPath(settings.actionType.EXPORT)
         )
-        self.export_destination = fd.getExistingDirectory()
+        chosen_destination = fd.getExistingDirectory()
+
+        # if dialog is canceled, use default path
+        if chosen_destination:
+            self.export_destination = chosen_destination
+            settings.setDefaultPath(settings.actionType.EXPORT, self.export_destination)
+        else:
+            self.export_destination = settings.getDefaultPath(settings.actionType.EXPORT)
 
     def _createWidgets(self):
         self.FilePickerArea.addWidget(QLabel(_("Export To %s") % self.export_destination))
@@ -207,8 +213,7 @@ class clipExportWindow(QDialog):
             except Exception as ex:
                 log.error("Error Exporting Clip: "+str(ex))
                 QMessageBox.warning(self, _("Error Exporting Clip"),
-                                    _("The following error occurred while "\
-                    +"exporting this clip \n\n%s") % str(ex))
+                                    _("The following error occurred while exporting this clip: \n%s") % str(ex))
                 log.info("Removing this clip from total_frames")
                 total_frames -= int(framesInClip(c))
                 if os.path.exists(export_path):
@@ -257,9 +262,10 @@ class clipExportWindow(QDialog):
             # If within 2 frames of complete, show 100 percent.
             self.progressExportVideo.setValue(100)
             return
-        self.progressExportVideo.setValue((count/total) * 100)
+        self.progressExportVideo.setValue(round((count/total) * 100))
 
     def _updateDialogExportFinished(self):
+        self.progressExportVideo.setValue(100)
         self.setWindowTitle(_("Done"))
         self.cancel_button.hide()
         self.done_button.setHidden(False)

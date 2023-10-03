@@ -150,7 +150,7 @@
     "category": "Preview",
     "min": 22050,
     "setting": "default-samplerate",
-    "value": 44100,
+    "value": 48000,
     "values": [
       {
         "value": 22050,
@@ -263,8 +263,45 @@
   },
   {
     "min": 0,
+    "max": 1024,
+    "value": 24,
+    "title": "Cache Pre-roll: Min Frames",
+    "type": "spinner-int",
+    "category": "Cache",
+    "setting": "cache-preroll-min-frames"
+  },
+  {
+    "min": 0,
+    "max": 1024,
+    "value": 48,
+    "title": "Cache Pre-roll: Max Frames",
+    "type": "spinner-int",
+    "category": "Cache",
+    "setting": "cache-preroll-max-frames"
+  },
+  {
+    "min": 0.0,
+    "max": 1.0,
+    "step": 0.1,
+    "value": 0.7,
+    "title": "Cache Ahead (Percent)",
+    "type": "spinner",
+    "category": "Cache",
+    "setting": "cache-ahead-percent"
+  },
+  {
+    "min": 0,
+    "max": 1024,
+    "value": 600,
+    "title": "Cache Max Frames",
+    "type": "spinner-int",
+    "category": "Cache",
+    "setting": "cache-max-frames"
+  },
+  {
+    "min": 0,
     "max": 9999999,
-    "value": 250,
+    "value": 512,
     "title": "Cache Limit (MB)",
     "type": "spinner-int",
     "category": "Cache",
@@ -327,6 +364,14 @@
     "type": "bool",
     "category": "Debug",
     "setting": "debug-mode",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Show Playback Performance (FPS)",
+    "type": "bool",
+    "category": "Debug",
+    "setting": "preview-fps",
     "restart": false
   },
   {
@@ -420,7 +465,7 @@
     "type": "dropdown",
     "value": "0",
     "values": [],
-    "restart": true
+    "restart": false
   },
   {
     "min": 0,
@@ -484,7 +529,6 @@
     "category": "Tutorial",
     "setting": "tutorial_ids"
   },
-
   {
     "category": "Keyboard",
     "title": "Preferences",
@@ -694,10 +738,6 @@
     "value": "-",
     "type": "text"
   },
-
-
-
-
   {
     "category": "Keyboard",
     "title": "Previous Frame",
@@ -960,5 +1000,92 @@
     "setting": "actionDuplicateTitle",
     "value": "Ctrl+Shift+C",
     "type": "text"
+  },
+  {
+    "category": "Keyboard",
+    "title": "Clear All Cache",
+    "restart": false,
+    "setting": "actionClearAllCache",
+    "value": "Ctrl+Shift+ESC",
+    "type": "text"
+  },
+  {
+    "category": "Location",
+    "title": "File Import",
+    "setting": "locationImportType",
+    "translate_values": true,
+    "value": 1,
+    "type": "dropdown",
+    "values": [
+      {
+        "value": 1,
+        "name": "Recent Folder"
+      },
+      {
+        "value": 2,
+        "name": "Project Folder"
+      }
+    ],
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "File Import Path",
+    "setting": "locationImportPath",
+    "value": "",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "Save or Open Project",
+    "setting": "locationProjectType",
+    "value": 1,
+    "type": "dropdown",
+    "values": [
+      {
+        "value": 1,
+        "name": "Recent Folder"
+      },
+      {
+        "value": 2,
+        "name": "Project Folder"
+      }
+    ],
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "Save or Open Project Path",
+    "setting": "locationProjectPath",
+    "value": "",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "Video Export",
+    "setting": "locationExportType",
+    "value": 2,
+    "type": "dropdown",
+    "values": [
+      {
+        "value": 1,
+        "name": "Recent Folder"
+      },
+      {
+        "value": 2,
+        "name": "Project Folder"
+      }
+    ],
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "Video Export Path",
+    "setting": "locationExportPath",
+    "value": "",
+    "type": "hidden",
+    "restart": false
   }
 ]

@@ -27,6 +27,7 @@
  """
 
 import os
+import uuid
 from operator import itemgetter
 from random import shuffle, randint, uniform
 
@@ -152,6 +153,10 @@ class AddToTimeline(QDialog):
         """ Ok button clicked """
         log.info('accept')
 
+        # Transaction id to group all updates together
+        tid = str(uuid.uuid4())
+        get_app().updates.transaction_id = tid
+
         # Get settings from form
         start_position = self.txtStartTime.value()
         track_num = self.cmbTrack.currentData()
@@ -194,22 +199,12 @@ class AddToTimeline(QDialog):
             new_clip["layer"] = track_num
             new_clip["file_id"] = file.id
             new_clip["title"] = filename
+            new_clip["reader"] = file.data
 
             # Skip any clips that are missing a 'reader' attribute
             # TODO: Determine why this even happens, as it shouldn't be possible
             if not new_clip.get("reader"):
                 continue  # Skip to next file
-
-            # Overwrite frame rate (incase the user changed it in the File Properties)
-            file_properties_fps = float(file.data["fps"]["num"]) / float(file.data["fps"]["den"])
-            file_fps = float(new_clip["reader"]["fps"]["num"]) / float(new_clip["reader"]["fps"]["den"])
-            fps_diff = file_fps / file_properties_fps
-            new_clip["reader"]["fps"]["num"] = file.data["fps"]["num"]
-            new_clip["reader"]["fps"]["den"] = file.data["fps"]["den"]
-            # Scale duration / length / and end properties
-            new_clip["reader"]["duration"] *= fps_diff
-            new_clip["end"] *= fps_diff
-            new_clip["duration"] *= fps_diff
 
             # Check for optional start and end attributes
             start_time = 0
@@ -226,6 +221,8 @@ class AddToTimeline(QDialog):
             new_clip["duration"] = new_clip["reader"]["duration"]
             if file.data["media_type"] == "image":
                 end_time = image_length
+                new_clip["end"] = end_time
+            else:
                 new_clip["end"] = end_time
 
             # Adjust Fade of Clips (if no transition is chosen)
@@ -375,6 +372,9 @@ class AddToTimeline(QDialog):
 
             # Increment position by length of clip
             position += (end_time - start_time)
+
+        # Clear transaction
+        get_app().updates.transaction_id = None
 
         # Accept dialog
         super(AddToTimeline, self).accept()

@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
     QWidget, QDialog, QMessageBox, QFileDialog,
     QVBoxLayout, QHBoxLayout, QSizePolicy,
     QScrollArea, QLabel, QLineEdit, QPushButton,
-    QDoubleSpinBox, QComboBox, QCheckBox, QSpinBox,
+    QDoubleSpinBox, QComboBox, QCheckBox, QSpinBox, QStyle,
 )
 from PyQt5.QtGui import QKeySequence, QIcon
 
@@ -75,6 +75,9 @@ class Preferences(QDialog):
 
         # Track metrics
         track_metric_screen("preferences-screen")
+
+        # Disable video caching
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
         # Load all user values
         self.params = {}
@@ -214,7 +217,7 @@ class Preferences(QDialog):
                     widget.setMinimum(float(param["min"]))
                     widget.setMaximum(float(param["max"]))
                     widget.setValue(float(param["value"]))
-                    widget.setSingleStep(1.0)
+                    widget.setSingleStep(param.get("step", 1.0))
                     widget.setToolTip(param["title"])
                     widget.valueChanged.connect(functools.partial(self.spinner_value_changed, param))
 
@@ -224,7 +227,7 @@ class Preferences(QDialog):
                     widget.setMinimum(int(param["min"]))
                     widget.setMaximum(int(param["max"]))
                     widget.setValue(int(param["value"]))
-                    widget.setSingleStep(1)
+                    widget.setSingleStep(param.get("step", 1))
                     widget.setToolTip(param["title"])
                     widget.valueChanged.connect(functools.partial(self.spinner_value_changed, param))
 
@@ -252,6 +255,7 @@ class Preferences(QDialog):
 
                     # create spinner
                     widget = QComboBox()
+                    widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
 
                     # Get values
                     value_list = param["values"]
@@ -260,16 +264,23 @@ class Preferences(QDialog):
                         value_list = []
                         # Loop through profiles
                         for profile_folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
-                            for file in os.listdir(profile_folder):
+                            for file in reversed(sorted(os.listdir(profile_folder))):
                                 # Load Profile and append description
                                 profile_path = os.path.join(profile_folder, file)
+                                if os.path.isdir(profile_path):
+                                    continue
                                 profile = openshot.Profile(profile_path)
+                                profile_lbl = f"{profile.info.description} ({profile.info.width}x{profile.info.height})"
                                 value_list.append({
-                                    "name": profile.info.description,
+                                    "name": profile_lbl,
                                     "value": profile.info.description
                                     })
-                        # Sort profile list
-                        value_list.sort(key=operator.itemgetter("name"))
+
+                        # Add test button
+                        extraWidget = QPushButton()
+                        extraWidget.setToolTip(_("Search Profiles"))
+                        extraWidget.setIcon(QIcon(":/icons/Humanity/mimes/16/video-x-generic.svg"))
+                        extraWidget.clicked.connect(functools.partial(self.btnBrowseProfiles_clicked, widget))
 
                     # Overwrite value list (for audio device list dropdown)
                     if param["setting"] == "playback-audio-device":
@@ -277,10 +288,12 @@ class Preferences(QDialog):
                         # Loop through audio devices
                         value_list.append({"name": "Default", "value": ""})
                         for audio_device in get_app().window.preview_thread.player.GetAudioDeviceNames():
+                            # Text:  Type first, then device name  (i.e. "ALSA: PulseAudio Sound Server")
+                            # Value: Name first, ||, then device type  (i.e. "PulseAudio Sound Server||ALSA")
                             value_list.append({
                                 "name": "%s: %s" % (audio_device[1], audio_device[0]),
-                                "value": audio_device[0],
-                                })
+                                "value": "%s||%s" % (audio_device[0], audio_device[1])
+                            })
 
                     # Overwrite value list (for language dropdown)
                     if param["setting"] == "default-language":
@@ -315,50 +328,31 @@ class Preferences(QDialog):
                             elif os_platform == "Linux" and v not in ("0", "1", "2", "6"):
                                 value_list.remove(value_item)
 
-                        # Remove hardware mode items which cannot decode the example video
-                        log.debug("Preparing to test hardware decoding: %s", value_list)
-                        for value_item in list(value_list):
-                            v = value_item["value"]
-                            if (not self.testHardwareDecode(value_list, v, 0)
-                               and not self.testHardwareDecode(value_list, v, 1)):
-                                value_list.remove(value_item)
-                        log.debug("Completed hardware decoding testing")
+                            # Add test button
+                            extraWidget = QPushButton(_("Test"))
+                            extraWidget.clicked.connect(functools.partial(self.testHardwareDecode, widget,
+                                                                          param, extraWidget))
 
                     # Replace %s dropdown values for hardware acceleration
                     if param["setting"] in ("graca_number_en", "graca_number_de"):
+                        value_list = []
                         for card_index in range(0, 3):
-                            # Test each graphics card, and only include valid ones
-                            if card_index in self.hardware_tests_cards and self.hardware_tests_cards.get(card_index):
-                                # Loop through valid modes supported by this card
-                                for mode in self.hardware_tests_cards.get(card_index):
-                                    # Add supported graphics card for each mode (duplicates are okay)
-                                    if mode == 0:
-                                        # cpu only
-                                        value_list.append({
-                                            "value": card_index,
-                                            "name": _("No acceleration"),
-                                            "icon": mode
-                                            })
-                                    else:
-                                        # hardware accelerated
-                                        value_list.append({
-                                            "value": card_index,
-                                            "name": _("Graphics Card %s") % (card_index + 1),
-                                            "icon": mode
-                                            })
-
-                        if os_platform in ["Darwin", "Windows"]:
-                            # Disable graphics card selection for Mac and Windows (since libopenshot
-                            # only supports device selection on Linux)
-                            widget.setEnabled(False)
-                            widget.setToolTip(_("Graphics card selection not supported in %s") % os_platform)
+                            # hardware accelerated
+                            value_list.append({
+                                "value": card_index,
+                                "name": _("Graphics Card %s") % card_index
+                            })
 
                     # Add normal values
                     box_index = 0
                     for value_item in value_list:
-                        k = value_item["name"]
-                        v = value_item["value"]
+                        k = value_item.get("name")
+                        v = value_item.get("value")
                         i = value_item.get("icon", None)
+
+                        # Translate dropdown item (if needed)
+                        if param.get("translate_values"):
+                            k = _(value_item["name"])
 
                         # Override icons for certain values
                         # TODO: Find a more elegant way to do this
@@ -509,7 +503,9 @@ class Preferences(QDialog):
             openshot.Settings.Instance().DE_LIMIT_HEIGHT_MAX = int(str(value))
 
         # Apply cache settings (if needed)
-        if param["setting"] in ["cache-limit-mb", "cache-scale", "cache-quality"]:
+        if param["setting"] in ["cache-limit-mb", "cache-scale", "cache-quality",
+                                "cache-ahead-percent", "cache-preroll-min-frames",
+                                "cache-preroll-max-frames", "cache-max-frames"]:
             get_app().window.InitCacheSettings()
 
         # Check for restart
@@ -561,40 +557,70 @@ class Preferences(QDialog):
         # Check for restart
         self.check_for_restart(param)
 
-    def testHardwareDecode(self, all_decoders, decoder, decoder_card="0"):
-        """Test specific settings for hardware decode, so the UI can remove unsupported options."""
-        is_supported = False
-        example_media = os.path.join(info.RESOURCES_PATH, "hardware-example.mp4")
-        decoder_name = next(item for item in all_decoders if item["value"] == str(decoder)).get("name", "Unknown")
+    def btnBrowseProfiles_clicked(self, widget):
+        """Search profile button clicked"""
+        # Get current selection profile object
+        profile_description = widget.currentData()
 
-        # Persist decoder card results
-        if decoder_card not in self.hardware_tests_cards:
-            # Init new decoder card list
-            self.hardware_tests_cards[decoder_card] = []
-        if int(decoder) in self.hardware_tests_cards.get(decoder_card):
-            # Test already run and succeeded
-            return True
+        # Find matching profile path
+        matching_profile_path = None
+        for profile_folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
+            for file in reversed(sorted(os.listdir(profile_folder))):
+                # Load Profile and append description
+                matching_profile_path = os.path.join(profile_folder, file)
+                if os.path.isdir(matching_profile_path):
+                    continue
+                profile = openshot.Profile(matching_profile_path)
+                if profile.info.description == profile_description:
+                    break
+
+        # Load matching profile
+        current_profile = openshot.Profile(matching_profile_path)
+
+        # Show dialog (init to current selection)
+        from windows.profile import Profile
+        log.debug("Showing profile dialog")
+        win = Profile(current_profile.Key())
+        # Run the dialog event loop - blocking interaction on this window during this time
+        result = win.exec_()
+
+        profile = win.selected_profile
+        if result == QDialog.Accepted and profile:
+
+            # select the project's current profile
+            profile_index = self.getVideoProfileIndex(widget, profile)
+            if profile_index != -1:
+                # Re-select project profile (if found in list)
+                widget.setCurrentIndex(profile_index)
+            else:
+                # Previous profile not in list, so
+                # default to first profile in list
+                widget.setCurrentIndex(0)
+
+    def getVideoProfileIndex(self, widget, profile):
+        """Get the index of a profile name or profile key (-1 if not found)"""
+        for index in range(widget.count()):
+            combo_profile_description = widget.itemData(index)
+            if profile.info.description == combo_profile_description:
+                return index
+        return -1
+
+    def testHardwareDecode(self, widget, param, btn):
+        """Test specific settings for hardware decode"""
+        all_decoders = param.get("values", [])
+        is_supported = False
 
         # Keep track of previous settings
         current_decoder = openshot.Settings.Instance().HARDWARE_DECODER
         current_decoder_card = openshot.Settings.Instance().HW_DE_DEVICE_SET
-        current_decoder_name = next(
-            item for item in all_decoders
-            if item["value"] == str(current_decoder)
-            ).get("name", "Unknown")
-        log.debug(
-            "Current hardware decoder: %s (%s-%s)",
+        current_decoder_name = next(item for item in all_decoders
+                                    if item["value"] == str(current_decoder)).get("name", "Unknown")
+        log.debug("Testing hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
             current_decoder_name, current_decoder, current_decoder_card)
 
         try:
-            # Temp override hardware settings (to test them)
-            log.debug(
-                "Testing hardware decoder: %s (%s-%s)",
-                decoder_name, decoder, decoder_card)
-            openshot.Settings.Instance().HARDWARE_DECODER = int(decoder)
-            openshot.Settings.Instance().HW_DE_DEVICE_SET = int(decoder_card)
-
             # Find reader
+            example_media = os.path.join(info.RESOURCES_PATH, "hardware-example.mp4")
             clip = openshot.Clip(example_media)
             reader = clip.Reader()
 
@@ -604,26 +630,27 @@ class Preferences(QDialog):
             # Test decoded pixel values for a valid decode (based on hardware-example.mp4)
             if reader.GetFrame(0).CheckPixel(0, 0, 2, 133, 255, 255, 5):
                 is_supported = True
-                self.hardware_tests_cards[decoder_card].append(int(decoder))
-                log.debug(
-                    "Successful hardware decoder! %s (%s-%s)",
-                    decoder_name, decoder, decoder_card)
+                log.debug("Successful test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
+                          current_decoder_name, current_decoder, current_decoder_card)
             else:
-                log.debug(
-                    "CheckPixel failed testing hardware decoding (i.e. wrong color found): %s (%s-%s)",
-                    decoder_name, decoder, decoder_card)
+                log.debug("Failed test of hardware decoder (incorrect pixel color found): "
+                          "%s (Decoder Type: %s, Graphics Card: %s)",
+                          current_decoder_name, current_decoder, current_decoder_card)
 
             reader.Close()
             clip.Close()
 
-        except Exception:
-            log.debug(
-                "Exception trying to test hardware decoding (this is expected): %s (%s-%s)",
-                decoder_name, decoder, decoder_card)
+        except Exception as ex:
+            log.debug("Exception testing hardware decoder: %s (Decoder Type: %s, Graphics Card: %s) %s",
+                      current_decoder_name, current_decoder, current_decoder_card, str(ex))
 
-        # Resume current settings
-        openshot.Settings.Instance().HARDWARE_DECODER = current_decoder
-        openshot.Settings.Instance().HW_DE_DEVICE_SET = current_decoder_card
+        # Show icon on test button (checkmark vs X)
+        icon_name = "SP_DialogApplyButton"
+        if not is_supported:
+            icon_name = "SP_DialogCancelButton"
+        pixmapi = getattr(QStyle, icon_name)
+        icon = self.style().standardIcon(pixmapi)
+        btn.setIcon(icon)
 
         return is_supported
 
@@ -633,6 +660,9 @@ class Preferences(QDialog):
         self.reject()
 
     def reject(self):
+        # Enable video caching
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
+
         # Prompt user to restart openshot (if needed)
         if self.requires_restart:
             msg = QMessageBox()

@@ -24,14 +24,15 @@
 ; NOTE: The value of AppId uniquely identifies this application.
 ; Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={code:GetAppId|4BB0DCDC-BC24-49EC-8937-72956C33A470}
-AppName={code:GetDefaultDirName|OpenShot Video Editor}
+AppId={code:GetAppId|{{4BB0DCDC-BC24-49EC-8937-72956C33A470}}
+AppName=OpenShot Video Editor
 AppVersion={#VERSION}
+AppVerName={#MyAppName} {#VERSION}
 VersionInfoVersion={#VERSION}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyPublisherURL}
 AppSupportURL={#MySupportURL}
-AppCopyright=Copyright (c) 2008-2019 {#MyAppPublisher}
+AppCopyright=(c) 2008-2022 {#MyAppPublisher}
 DefaultDirName={code:GetDefaultDirName|OpenShot Video Editor}
 DisableProgramGroupPage=yes
 LicenseFile=..\COPYING
@@ -116,10 +117,14 @@ Name: "lithuanian"; MessagesFile: "compiler:Languages\Lithuanian.isl"
 Name: "icelandic"; MessagesFile: "compiler:Languages\Icelandic.isl"
 Name: "slovak"; MessagesFile: "compiler:Languages\Slovak.isl"
 
+[CustomMessages]
+english.FirewallException=Add an exception to the Windows Firewall for optionally sending anonymized usage and error information.
+italian.FirewallException=Aggiungi un'eccezione a Windows Firewall per l'invio facoltativo di informazioni anonime sull'uso/errori dell'applicazione.
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: not PortableCheck;
 Name: "fileassoc"; Description: "{cm:AssocFileExtension,{#MyAppName},.osp}"; GroupDescription: "{cm:AdditionalIcons}"; Check: not PortableCheck;
-Name: "firewall"; Description: "Add an exception to the Windows Firewall for optionally sending anonymized usage and error information."; GroupDescription: "{cm:AdditionalIcons}"; Check: not PortableCheck;
+Name: "firewall"; Description: "{cm:FirewallException}"; GroupDescription: "{cm:AdditionalIcons}"; Check: not PortableCheck;
 
 [InstallDelete]
 ; Remove previous installed versions of OpenShot
@@ -134,6 +139,8 @@ Root: HKLM; Subkey: "Software\Classes\.osp"; ValueType: string; ValueName: ""; V
 Root: HKLM; Subkey: "Software\Classes\OpenShotProject"; ValueType: string; ValueName: ""; ValueData: "{#MyAppProjectFileDesc}"; Flags: uninsdeletekey; Tasks: fileassoc
 ; Launcher association for data files of type OpenShotProject
 Root: HKLM; Subkey: "Software\Classes\OpenShotProject\shell\open\command"; ValueType: string;  ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: fileassoc
+; Clean-up old, incorrect AppID Uninstaller (used in 2.6.1-dev builds)
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\4BB0DCDC-BC24-49EC-8937-72956C33A470_is1"; ValueName: ""; Flags: deletekey;
 
 [Files]
 ; Add all frozen files from cx_Freeze build

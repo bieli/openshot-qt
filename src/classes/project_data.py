@@ -36,7 +36,7 @@ import json
 
 from classes import info
 from classes.app import get_app
-from classes.image_types import is_image
+from classes.image_types import get_media_type
 from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
@@ -146,12 +146,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         """Prevent calling JsonDataStore set() method. It is not allowed in ProjectDataStore, as changes come from UpdateManager."""
         raise RuntimeError("ProjectDataStore.set() is not allowed. Changes must route through UpdateManager.")
 
-    def _set(self, key, values=None, add=False, partial_update=False, remove=False):
+    def _set(self, key, values=None, add=False, remove=False):
         """ Store setting, but adding isn't allowed. All possible settings must be in default settings file. """
 
-        log.info(
-            "_set key: %s values: %s add: %s partial: %s remove: %s",
-            key, values, add, partial_update, remove)
+        log.debug(
+            "_set key: %s, values: %s, add: %s, remove: %s",
+            key, values, add, remove)
         parent, my_key = None, ""
 
         # Verify key is valid type
@@ -229,7 +229,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
 
         # After processing each key, we've found object and parent, return former value/s on update
-        ret = copy.deepcopy(obj)
+        ret = json.loads(json.dumps(obj))
 
         # Apply the correct action to the found item
         if remove:
@@ -285,63 +285,82 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Get default profile
         s = get_app().get_settings()
-        default_profile = s.get("default-profile")
+        default_profile_desc = s.get("default-profile")
+
+        # Get profile (if any)
+        profile = self.get_profile(profile_desc=default_profile_desc)
+        if not profile:
+            # Fallback, in case of missing/invalid default profile
+            profile = self.get_profile(profile_desc="HD 720p 30 fps")
+
+        # Update default profile (if it changed)
+        if profile and default_profile_desc != profile.info.description:
+            log.info(f"Updating default-profile from legacy `{default_profile_desc}` to `{profile.info.description}`.")
+            s.set("default-profile", profile.info.description)
+
+        # Apply default audio playback settings to this data structure
+        self.apply_default_audio_settings()
+
+        # Set default project ID
+        self._data["id"] = self.generate_id()
+
+    def get_profile(self, profile_desc=None, profile_key=None):
+        """Attempt to find a specific profile"""
+        profile = None
+
+        # Loop through legacy profiles
+        LEGACY_PROFILE_PATH = os.path.join(info.PROFILES_PATH, "legacy")
+        legacy_profile = None
+        for legacy_filename in os.listdir(LEGACY_PROFILE_PATH):
+            legacy_profile_path = os.path.join(LEGACY_PROFILE_PATH, legacy_filename)
+            try:
+                # Load Profile and append description
+                temp_profile = openshot.Profile(legacy_profile_path)
+                if profile_desc == temp_profile.info.description:
+                    legacy_profile = temp_profile
+                    break
+            except RuntimeError:
+                # Ignore legacy parsing errors
+                pass
 
         # Loop through profiles
         profile_dirs = [info.USER_PROFILES_PATH, info.PROFILES_PATH]
         available_dirs = [f for f in profile_dirs if os.path.exists(f)]
         for profile_folder in available_dirs:
-            for file in os.listdir(profile_folder):
+            for file in reversed(sorted(os.listdir(profile_folder))):
                 profile_path = os.path.join(profile_folder, file)
+                if os.path.isdir(profile_path):
+                    continue
                 try:
                     # Load Profile and append description
-                    profile = openshot.Profile(profile_path)
+                    temp_profile = openshot.Profile(profile_path)
 
-                    if default_profile == profile.info.description:
-                        log.info("Setting default profile to %s" % profile.info.description)
-
-                        # Update default profile
-                        self._data["profile"] = profile.info.description
-                        self._data["width"] = profile.info.width
-                        self._data["height"] = profile.info.height
-                        self._data["fps"] = {"num": profile.info.fps.num, "den": profile.info.fps.den}
-                        self._data["display_ratio"] = {"num": profile.info.display_ratio.num, "den": profile.info.display_ratio.den}
-                        self._data["pixel_ratio"] = {"num": profile.info.pixel_ratio.num, "den": profile.info.pixel_ratio.den}
+                    if profile_desc == temp_profile.info.description:
+                        profile = self.apply_profile(temp_profile)
+                        break
+                    if legacy_profile and legacy_profile.Key() == temp_profile.Key():
+                        # Switch from legacy profile to new profile
+                        profile = self.apply_profile(temp_profile)
                         break
 
                 except RuntimeError as e:
                     # This exception occurs when there's a problem parsing the Profile file - display a message and continue
                     log.error("Failed to parse file '%s' as a profile: %s" % (profile_path, e))
 
-        # Get the default audio settings for the timeline (and preview playback)
-        default_sample_rate = int(s.get("default-samplerate"))
-        default_channel_layout = s.get("default-channellayout")
+        return profile
 
-        channels = 2
-        channel_layout = openshot.LAYOUT_STEREO
-        if default_channel_layout == "LAYOUT_MONO":
-            channels = 1
-            channel_layout = openshot.LAYOUT_MONO
-        elif default_channel_layout == "LAYOUT_STEREO":
-            channels = 2
-            channel_layout = openshot.LAYOUT_STEREO
-        elif default_channel_layout == "LAYOUT_SURROUND":
-            channels = 3
-            channel_layout = openshot.LAYOUT_SURROUND
-        elif default_channel_layout == "LAYOUT_5POINT1":
-            channels = 6
-            channel_layout = openshot.LAYOUT_5POINT1
-        elif default_channel_layout == "LAYOUT_7POINT1":
-            channels = 8
-            channel_layout = openshot.LAYOUT_7POINT1
+    def apply_profile(self, profile):
+        """Apply a specific profile to the current project data"""
+        log.info("Setting profile to %s" % profile.info.description)
 
-        # Set default samplerate and channels
-        self._data["sample_rate"] = default_sample_rate
-        self._data["channels"] = channels
-        self._data["channel_layout"] = channel_layout
-
-        # Set default project ID
-        self._data["id"] = self.generate_id()
+        # Update default profile
+        self._data["profile"] = profile.info.description
+        self._data["width"] = profile.info.width
+        self._data["height"] = profile.info.height
+        self._data["fps"] = {"num": profile.info.fps.num, "den": profile.info.fps.den}
+        self._data["display_ratio"] = {"num": profile.info.display_ratio.num, "den": profile.info.display_ratio.den}
+        self._data["pixel_ratio"] = {"num": profile.info.pixel_ratio.num, "den": profile.info.pixel_ratio.den}
+        return profile
 
     def load(self, file_path, clear_thumbnails=True):
         """ Load project from file """
@@ -361,6 +380,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 # Fix history (if broken)
                 if not project_data.get("history"):
                     project_data["history"] = {"undo": [], "redo": []}
+
+                # If project has waveforms, enable removing waveforms
+                get_app().window.actionClearWaveformData.setEnabled(False)
+                for file in project_data["files"]:
+                    if file.get("ui",{}).get("audio_data", []):
+                        get_app().window.actionClearWaveformData.setEnabled(True)
+                        break
 
             except Exception:
                 try:
@@ -382,6 +408,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.THUMBNAIL_PATH = os.path.join(get_assets_path(self.current_filepath), "thumbnail")
                 info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
                 info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
+                info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
 
             # Clear needs save flag
             self.has_unsaved_changes = False
@@ -402,8 +429,17 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Upgrade any data structures
             self.upgrade_project_data_structures()
 
+            # Get profile (if any)
+            project_profile_desc = self._data.get("profile", "HD 720p 30 fps")
+            profile = self.get_profile(profile_desc=project_profile_desc)
+            if not profile:
+                # Fallback, in case of missing/invalid default profile
+                profile = self.get_profile(profile_desc="HD 720p 30 fps")
+
+            # Apply default audio playback settings to this data structure
+            self.apply_default_audio_settings()
+
         # Get app, and distribute all project data through update manager
-        from classes.app import get_app
         get_app().updates.load(self._data)
 
     def rescale_keyframes(self, scale_factor):
@@ -414,7 +450,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Create a scaler instance
         scaler = KeyframeScaler(factor=scale_factor)
         # Create copy of active project data and scale
-        scaled = scaler(copy.deepcopy(self._data))
+        scaled = scaler(json.loads(json.dumps(self._data)))
         return scaled
 
     def read_legacy_project_file(self, file_path):
@@ -422,7 +458,6 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         import sys
         import pickle
         from classes.query import File, Track, Clip, Transition
-        from classes.app import get_app
         import openshot
         import json
 
@@ -435,7 +470,6 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                    "libopenshot": openshot.OPENSHOT_VERSION_FULL}
 
         # Get FPS from project
-        from classes.app import get_app
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
@@ -481,12 +515,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             file_data = json.loads(reader.Json(), strict=False)
 
                             # Determine media type
-                            if file_data["has_video"] and not is_image(file_data):
-                                file_data["media_type"] = "video"
-                            elif file_data["has_video"] and is_image(file_data):
-                                file_data["media_type"] = "image"
-                            elif file_data["has_audio"] and not file_data["has_video"]:
-                                file_data["media_type"] = "audio"
+                            file_data["media_type"] = get_media_type(file_data)
 
                             # Save new file to the project data
                             file = File()
@@ -503,7 +532,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             failed_files.append(item.name)
 
                 # Delete all tracks
-                track_list = copy.deepcopy(Track.filter())
+                track_list = Track.filter()
                 for track in track_list:
                     track.delete()
 
@@ -787,7 +816,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         log.info("Saving project file: %s", file_path)
 
-        # Move all temp files (i.e. Blender animations) to the project folder
+        # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
@@ -823,6 +852,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             target_thumb_path = os.path.join(asset_path, "thumbnail")
             target_title_path = os.path.join(asset_path, "title")
             target_blender_path = os.path.join(asset_path, "blender")
+            target_protobuf_path = os.path.join(asset_path, "protobuf_data")
+
+            # Create any missing target paths
+            try:
+                for target_dir in [asset_path, target_thumb_path, target_title_path,
+                                   target_blender_path, target_protobuf_path]:
+                    if not os.path.exists(target_dir):
+                        os.mkdir(target_dir)
+            except OSError:
+                pass
 
             # Update paths (if a previous path exists)
             #   /Project1/ to /Project2/ for example
@@ -831,6 +870,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.THUMBNAIL_PATH = os.path.join(previous_asset_path, "thumbnail")
                 info.TITLE_PATH = os.path.join(previous_asset_path, "title")
                 info.BLENDER_PATH = os.path.join(previous_asset_path, "blender")
+                info.PROTOBUF_DATA_PATH = os.path.join(previous_asset_path, "protobuf_data")
 
             # Track assets we copy/update
             copied = []
@@ -856,6 +896,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 target_blender_filepath = os.path.join(target_blender_path, blender_path)
                 if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
                     shutil.copytree(working_blender_path, target_blender_filepath)
+
+            # Copy all protobuf files (if not found in target asset folder)
+            for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
+                working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
+                target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
+                if not os.path.exists(target_protobuf_filepath):
+                    shutil.copy2(working_protobuf_path, target_protobuf_filepath)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -909,6 +956,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     clip["reader"]["path"] = reader_paths[file_id]
                     log.info("Updated clip %s path for file %s", clip_id, file_id)
 
+                log.info("Checking effects in clip %s path for protobuf files" % clip_id)
+                for effect in clip.get("effects", []):
+                    if "protobuf_data_path" in effect:
+                        old_protobuf_path = effect["protobuf_data_path"]
+                        old_protobuf_dir, protobuf_name = os.path.split(old_protobuf_path)
+                        if old_protobuf_dir != target_protobuf_path:
+                            effect["protobuf_data_path"] = os.path.join(target_protobuf_path, protobuf_name)
+                            log.info("Copied protobuf %s to %s", old_protobuf_path, target_protobuf_path)
+
         except Exception:
             log.error(
                 "Error while moving temp paths to project assets folder %s",
@@ -943,16 +999,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
     def check_if_paths_are_valid(self):
         """Check if all paths are valid, and prompt to update them if needed"""
-        # Get import path or project folder
-        starting_folder = None
-        if self._data["import_path"]:
-            starting_folder = os.path.join(self._data["import_path"])
-        elif self.current_filepath:
-            starting_folder = os.path.dirname(self.current_filepath)
-
+        app = get_app()
+        settings = app.get_settings()
         # Get translation method
-        from classes.app import get_app
-        _ = get_app()._tr
+        _ = app._tr
 
         log.info("checking project files...")
 
@@ -968,7 +1018,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 if path and is_modified and not is_skipped:
                     # Found file, update path
                     file["path"] = path
-                    get_app().updates.update_untracked(["import_path"], os.path.dirname(path))
+                    settings.setDefaultPath(settings.actionType.IMPORT, path)
                     log.info("Auto-updated missing file: %s", path)
                 elif is_skipped:
                     # Remove missing file
@@ -977,9 +1027,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Loop through each clip (in reverse order)
         for clip in reversed(self._data["clips"]):
-            path = clip["reader"]["path"]
+            path = clip.get("reader", {}).get("path", "")
 
-            if not os.path.exists(path) and "%" not in path:
+            if path and not os.path.exists(path) and "%" not in path:
                 # File is missing
                 path, is_modified, is_skipped = find_missing_file(path)
                 file_name_with_ext = os.path.basename(path)
@@ -1003,7 +1053,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         elif action.type == "update":
             # Update existing item
-            old_vals = self._set(action.key, action.values, partial_update=action.partial_update)
+            old_vals = self._set(action.key, action.values)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
             self.has_unsaved_changes = True
 
@@ -1027,3 +1077,38 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             c_index = random.randint(0, len(chars) - 1)
             id += (chars[c_index])
         return id
+
+    def apply_default_audio_settings(self):
+        """Apply the default preferences for sampleRate and channels to
+        the current project data, to force playback at a specific rate and for
+        a specific # of audio channels and channel layout."""
+        s = get_app().get_settings()
+
+        # Get the default audio settings for the timeline (and preview playback)
+        default_sample_rate = int(s.get("default-samplerate"))
+        default_channel_layout = s.get("default-channellayout")
+
+        channels = 2
+        channel_layout = openshot.LAYOUT_STEREO
+        if default_channel_layout == "LAYOUT_MONO":
+            channels = 1
+            channel_layout = openshot.LAYOUT_MONO
+        elif default_channel_layout == "LAYOUT_STEREO":
+            channels = 2
+            channel_layout = openshot.LAYOUT_STEREO
+        elif default_channel_layout == "LAYOUT_SURROUND":
+            channels = 3
+            channel_layout = openshot.LAYOUT_SURROUND
+        elif default_channel_layout == "LAYOUT_5POINT1":
+            channels = 6
+            channel_layout = openshot.LAYOUT_5POINT1
+        elif default_channel_layout == "LAYOUT_7POINT1":
+            channels = 8
+            channel_layout = openshot.LAYOUT_7POINT1
+
+        # Set default samplerate and channels
+        self._data["sample_rate"] = default_sample_rate
+        self._data["channels"] = channels
+        self._data["channel_layout"] = channel_layout
+
+        log.info("Apply default audio playback settings: %s, %s channels" % (self._data["sample_rate"], self._data["channels"]))

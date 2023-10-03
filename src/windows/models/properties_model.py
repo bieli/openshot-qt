@@ -35,6 +35,7 @@ from PyQt5.QtGui import (
     QPixmap, QColor,
     )
 
+from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
 from classes.query import Clip, Transition, Effect
@@ -80,8 +81,12 @@ class PropertiesModel(updates.UpdateInterface):
         self.next_item_id = item_id
         self.next_item_type = item_type
 
-        # Update the model data
-        self.update_timer.start()
+        if not item_type and self.selected:
+            # immediately clear property selection (but only if needed)
+            self.update_item_timeout()
+        else:
+            # Delay property selection (to prevent spamming of multi-selections)
+            self.update_timer.start()
 
     # Update the next item (once the timer runs out)
     def update_item_timeout(self):
@@ -95,31 +100,33 @@ class PropertiesModel(updates.UpdateInterface):
 
         log.debug("Update item: %s" % item_type)
 
-        timeline = get_app().window.timeline_sync.timeline
-        if item_type == "clip":
-            c = timeline.GetClip(item_id)
-            if c:
-                # Append to selected items
-                self.selected.append((c, item_type))
-        if item_type == "transition":
-            t = timeline.GetEffect(item_id)
-            if t:
-                # Append to selected items
-                self.selected.append((t, item_type))
-        if item_type == "effect":
-            e = timeline.GetClipEffect(item_id)
-            if e:
-                # Filter out basic properties, since this is an effect on a clip
-                self.filter_base_properties = ["position", "layer", "start", "end", "duration"]
-                # Append to selected items
-                self.selected.append((e, item_type))
-                self.selected_parent = e.ParentClip()
+        if item_type:
+            # Only retrieve object if item_type is valid
+            timeline = get_app().window.timeline_sync.timeline
+            if item_type == "clip":
+                c = timeline.GetClip(item_id)
+                if c:
+                    # Append to selected items
+                    self.selected.append((c, item_type))
+            if item_type == "transition":
+                t = timeline.GetEffect(item_id)
+                if t:
+                    # Append to selected items
+                    self.selected.append((t, item_type))
+            if item_type == "effect":
+                e = timeline.GetClipEffect(item_id)
+                if e:
+                    # Filter out basic properties, since this is an effect on a clip
+                    self.filter_base_properties = ["position", "layer", "start", "end", "duration"]
+                    # Append to selected items
+                    self.selected.append((e, item_type))
+                    self.selected_parent = e.ParentClip()
 
-        # Update frame # from timeline
-        self.update_frame(get_app().window.preview_thread.player.Position(), reload_model=False)
+            # Update frame # from timeline
+            self.update_frame(get_app().window.preview_thread.player.Position(), reload_model=False)
 
-        # Get ID of item
-        self.new_item = True
+            # Get ID of item
+            self.new_item = True
 
         # Update the model data
         self.update_model(get_app().window.txtPropertyFilter.text())
@@ -148,23 +155,26 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Determine the frame needed for this clip (based on the position on the timeline)
             time_diff = (requested_time - clip.Position()) + clip.Start()
-            self.frame_number = round(time_diff * fps_float) + 1
+            new_frame_number = round(time_diff * fps_float) + 1
+            if new_frame_number != self.frame_number:
+                # If frame # has changed
+                self.frame_number = new_frame_number
 
-            # Calculate biggest and smallest possible frames
-            min_frame_number = round((clip.Start() * fps_float)) + 1
-            max_frame_number = round((clip.End() * fps_float)) + 1
+                # Calculate biggest and smallest possible frames
+                min_frame_number = round((clip.Start() * fps_float)) + 1
+                max_frame_number = round((clip.End() * fps_float)) + 1
 
-            # Adjust frame number if out of range
-            if self.frame_number < min_frame_number:
-                self.frame_number = min_frame_number
-            if self.frame_number > max_frame_number:
-                self.frame_number = max_frame_number
+                # Adjust frame number if out of range
+                if self.frame_number < min_frame_number:
+                    self.frame_number = min_frame_number
+                if self.frame_number > max_frame_number:
+                    self.frame_number = max_frame_number
 
-            log.debug("Update frame to %s" % self.frame_number)
+                log.debug("Update frame to %s" % self.frame_number)
 
-            # Update the model data
-            if reload_model:
-                self.update_model(get_app().window.txtPropertyFilter.text())
+                # Update the model data
+                if reload_model:
+                    self.update_model(get_app().window.txtPropertyFilter.text())
 
     def remove_keyframe(self, item):
         """Remove an existing keyframe (if any)"""
@@ -198,7 +208,11 @@ class PropertiesModel(updates.UpdateInterface):
         # Create reference
         clip_data = c.data
         if object_id:
-            clip_data = c.data.get('objects').get(object_id)
+            objects = c.data.get('objects', {})
+            clip_data = objects.pop(object_id, {})
+            if not clip_data:
+                log.debug("No clip data found for this object id")
+                return
 
         if property_key in clip_data:  # Update clip attribute
             log_id = "{}/{}".format(clip_id, object_id) if object_id else clip_id
@@ -212,8 +226,7 @@ class PropertiesModel(updates.UpdateInterface):
                 keyframe_list = [clip_data[property_key]]
 
             # Loop through each keyframe (red, blue, and green)
-            for keyframe in keyframe_list:
-
+            for keyframe_index, keyframe in enumerate(keyframe_list):
                 # Keyframe
                 # Loop through points, find a matching points on this frame
                 closest_point = None
@@ -237,15 +250,57 @@ class PropertiesModel(updates.UpdateInterface):
                     log.debug("Found point to delete at X=%s" % point_to_delete["co"]["X"])
                     keyframe["Points"].remove(point_to_delete)
 
+                    # Check for 0 keyframes (and use sane defaults instead of the 0.0 default value)
+                    default_value = None
+                    if not keyframe["Points"]:
+                        if property_key in ["alpha", "scale_x", "scale_y", "time", "volume"]:
+                            default_value = 1.0
+                        elif property_key in ["origin_x", "origin_y"]:
+                            default_value = 0.5
+                        elif property_key in ["location_x", "location_y", "rotation", "shear_x", "shear_y"]:
+                            default_value = 0.0
+                        elif property_key in ["has_audio", "has_video", "channel_filter", "channel_mapping"]:
+                            default_value = -1.0
+                        elif property_key in ["wave_color"]:
+                            if keyframe_index == 0:
+                                # Red
+                                default_value = 0.0
+                            elif keyframe_index == 1:
+                                # Blue
+                                default_value = 255.0
+                            elif keyframe_index == 2:
+                                # Green
+                                default_value = 123.0
+                        if default_value is not None:
+                            keyframe["Points"].append({
+                                'co': {'X': self.frame_number, 'Y': default_value},
+                                'interpolation': 1})
+
+            # Determine if waveforms are impacted by this change
+            has_waveform = False
+            waveform_file_id = None
+            if property_key == "volume":
+                if clip_data.get("ui", {}).get("audio_data", []):
+                    waveform_file_id = c.data.get("file_id")
+                    has_waveform = True
+
             # Reduce # of clip properties we are saving (performance boost)
-            clip_data = {property_key: clip_data[property_key]}
-            if object_id:
-                clip_data = {'objects': {object_id: clip_data}}
+            if not object_id:
+                clip_data = {property_key: clip_data.get(property_key)}
+            else:
+                # If objects dict detected - don't reduce the # of objects
+                objects[object_id] = clip_data
+                clip_data = {'objects': objects}
 
             # Save changes
             if clip_updated:
                 # Save
+                c.data = clip_data
                 c.save()
+
+                # Update waveforms (if needed)
+                if has_waveform:
+                    get_audio_data({waveform_file_id: [c.id]})
 
                 # Update the preview
                 get_app().window.refreshFrameSignal.emit()
@@ -284,7 +339,11 @@ class PropertiesModel(updates.UpdateInterface):
                 # Create reference
                 clip_data = c.data
                 if object_id:
-                    clip_data = c.data.get('objects').get(object_id)
+                    objects = c.data.get('objects', {})
+                    clip_data = objects.pop(object_id, {})
+                    if not clip_data:
+                        log.debug("No clip data found for this object id")
+                        return
 
                 # Update clip attribute
                 if property_key in clip_data:
@@ -356,13 +415,17 @@ class PropertiesModel(updates.UpdateInterface):
                                 })
 
                 # Reduce # of clip properties we are saving (performance boost)
-                clip_data = {property_key: clip_data[property_key]}
-                if object_id:
-                    clip_data = {'objects': {object_id: clip_data}}
+                if not object_id:
+                    clip_data = {property_key: clip_data.get(property_key)}
+                else:
+                    # If objects dict detected - don't reduce the # of objects
+                    objects[object_id] = clip_data
+                    clip_data = {'objects': objects}
 
                 # Save changes
                 if clip_updated:
                     # Save
+                    c.data = clip_data
                     c.save()
 
                     # Update the preview
@@ -387,12 +450,15 @@ class PropertiesModel(updates.UpdateInterface):
         property_type = property[1]["type"]
         property_key = property[0]
         object_id = property[1]["object_id"]
+        objects = {}
         clip_id, item_type = item.data()
 
         # Get value (if any)
-        if item.text():
+        if item.text() or value:
             # Set and format value based on property type
-            if value is not None:
+            if value == "None":
+                new_value = ""
+            elif value is not None:
                 # Override value
                 new_value = value
             elif property_type == "string":
@@ -431,12 +497,16 @@ class PropertiesModel(updates.UpdateInterface):
             # Get effect object
             c = Effect.get(id=clip_id)
 
-        if c:
+        if c and c.data:
 
             # Create reference
             clip_data = c.data
             if object_id:
-                clip_data = c.data.get('objects').get(object_id)
+                objects = c.data.get('objects', {})
+                clip_data = objects.pop(object_id, {})
+                if not clip_data:
+                    log.debug("No clip data found for this object id")
+                    return
 
             # Update clip attribute
             if property_key in clip_data:
@@ -560,15 +630,31 @@ class PropertiesModel(updates.UpdateInterface):
                     except Exception:
                         log.warn('Invalid Reader value passed to property: %s', value, exc_info=1)
 
+            # Determine if waveforms are impacted by this change
+            has_waveform = False
+            waveform_file_id = None
+            if property_key == "volume":
+                if clip_data.get("ui", {}).get("audio_data", []):
+                    waveform_file_id = c.data.get("file_id")
+                    has_waveform = True
+
             # Reduce # of clip properties we are saving (performance boost)
-            clip_data = {property_key: clip_data.get(property_key)}
-            if object_id:
-                clip_data = {'objects': {object_id: clip_data}}
+            if not object_id:
+                clip_data = {property_key: clip_data.get(property_key)}
+            else:
+                # If objects dict detected - don't reduce the # of objects
+                objects[object_id] = clip_data
+                clip_data = {'objects': objects}
 
             # Save changes
             if clip_updated:
                 # Save
+                c.data = clip_data
                 c.save()
+
+                # Update waveforms (if needed)
+                if has_waveform:
+                    get_audio_data({waveform_file_id: [c.id]})
 
                 # Update the preview
                 get_app().window.refreshFrameSignal.emit()
@@ -706,7 +792,7 @@ class PropertiesModel(updates.UpdateInterface):
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
 
-        else:
+        elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
             # Get 1st Column
             col = self.items[name]["row"][0]
